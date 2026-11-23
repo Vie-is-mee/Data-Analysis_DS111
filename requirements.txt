@@ -1,0 +1,12 @@
+# Python 3.11, CPU-only. Freeze exact versions after environment acceptance.
+numpy>=1.26,<3.0
+pandas>=2.2,<3.0
+pyarrow>=17.0,<24.0
+scikit-learn>=1.5,<2.0
+lightgbm>=4.5,<5.0
+statsmodels>=0.14,<0.16
+scipy>=1.13,<2.0
+openpyxl>=3.1,<4.0
+joblib>=1.4,<2.0
+pytest>=8.0,<10.0
+matplotlib>=3.9,<4.0

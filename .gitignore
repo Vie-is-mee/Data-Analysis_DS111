@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Environments and editor settings
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Raw/intermediate/generated data; retain placeholder files
+/data/raw/*
+!/data/raw/.gitkeep
+/data/mock/*
+!/data/mock/.gitkeep
+/data/interim/*
+!/data/interim/.gitkeep
+/data/processed/*
+!/data/processed/.gitkeep
+
+# Generated models, predictions, and reports
+/outputs/models/*
+!/outputs/models/.gitkeep
+/outputs/predictions/*
+!/outputs/predictions/.gitkeep
+/outputs/reports/*
+!/outputs/reports/.gitkeep
+*.joblib
+*.pkl
+*.log
+
+# Workbook and Power BI local exports
+/workbook/*.xlsx
+/workbook/*.xlsm
+/dashboard/*.pbix
