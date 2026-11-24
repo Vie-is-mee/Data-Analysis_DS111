@@ -139,3 +139,42 @@ tiêu đề "Land Rover…" không khớp khi dữ liệu chưa có nhãn `land 
 
 Kiểm thử: 6/6 test pass; dữ liệu thật vẫn 243.467 dòng, kiểm định 33/33 PASS.
 Bài học cho báo cáo: thứ tự các bước làm sạch ảnh hưởng kết quả (lọc trước, bỏ trùng sau).
+
+## 24/11/2026 · Ngày 2 (tiếp) — M1-01 Workbook 9 sheet + exporter (phần đầu M1-14)
+
+- Viết `src/data/workbook_exporter.py`: `python -X utf8 -m src.data.workbook_exporter`
+  tạo `workbook/Project_Workbook.xlsx` (file .xlsx không lên Git → chia sẻ qua Drive).
+- **Chỉ thay sheet 00–07**, giữ nguyên các sheet 08* do M3 ghi vào cùng file
+  (`src.models.workbook_sync` cũng mở file có sẵn và chỉ thay sheet của M3). Có test kiểm tra.
+
+| Sheet | Nội dung | Căn cứ |
+|---|---|---|
+| 00_Log | Thông tin phiên bản + toàn bộ log biến đổi | CRISP-DM (Bài 1) |
+| 01_Raw_Profile | Hồ sơ 41 cột + giữ/bỏ + lý do | Bài 1 · Hiểu dữ liệu |
+| 02_Missing | Bảng cách xử lý khuyết theo cột + log | Bài 2 |
+| 03_Format | Log chuẩn hóa / lọc miền / lọc ngoại lệ | Bài 2, Bài 4 |
+| 04_Features | Công thức FormulaStore, thống kê trước/sau (mean, std, skewness) | Bài 2 |
+| 05_Encoding | Kế hoạch mã hóa từng cột (M3 thực hiện trong fold) | Bài 2 |
+| 06_Selection | Từ điển 22 cột; tương quan Pearson/Spearman với log_price kèm p-value; ma trận tương quan tô màu như heatmap; VIF | Bài 2, Bài 4 |
+| 07_Sample_Comparison | 300 listing_id cố định (seed 42), gốc ↔ sạch, cột "Trường đã thay đổi" | M1-13 |
+| 08_Experiment_Tracking | Chỗ trống cho M3 | — |
+
+### Phát hiện từ Sheet 06 (đưa vào báo cáo/slide)
+- **year và car_age tương quan r = −1 tuyệt đối, VIF = ∞**: mọi tin đăng trong năm 2026
+  nên car_age = 2026 − year. Hai biến mang cùng một thông tin → mô hình tuyến tính
+  chỉ dùng **một** (đề xuất car_age). Báo M3.
+- car_age – log_price: Pearson chỉ **−0,185** nhưng Spearman **−0,448**. Quan hệ đơn điệu
+  nhưng không tuyến tính: xe cổ (đời cũ) lại đắt, và `max_year = 2022` đã cắt hết xe mới.
+  → Lý do dùng Spearman (Bài 4) và thử car_age² (Bài 5 · hồi quy đa thức).
+- odometer – log_price: Pearson −0,446, Spearman −0,491 (yếu tố mạnh nhất trong nhóm số).
+- miles_per_year gần như không tương quan với giá (r = 0,045).
+- p-value ≈ 0 với mọi cặp vì n = 243.467 (Bài 4: mẫu lớn → r nhỏ vẫn có ý nghĩa thống kê;
+  cần đọc độ lớn r chứ không chỉ p).
+
+### Sheet 07 (300 mẫu)
+- Không đổi: 120 dòng; condition khuyết → unknown: 134; cylinders điền: 68; drive: 63;
+  manufacturer: 15 (ví dụ: khuyết → maserati từ title; rover → land rover).
+- Sửa trong lúc làm: cylinders ban đầu bị đánh dấu "đổi" ở cả 300 dòng chỉ vì định dạng
+  ('6 cylinders' → 6) → so sánh sau khi tách số.
+
+Kiểm thử: 8/8 test M1 pass (thêm 2 test exporter: giữ sheet M3, mẫu Sheet 07 cố định).
