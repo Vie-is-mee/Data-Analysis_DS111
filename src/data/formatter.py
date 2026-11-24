@@ -1,6 +1,6 @@
 """M1-05 · Bước 2 · Chuẩn hóa → Workbook Sheet 03.
 
-Chuẩn kiểu ngày/số, lọc giá ảo 2 tầng, gộp tên hãng, chuẩn cylinders,
+Chuẩn kiểu ngày/số, lọc giá ảo (tầng 1) + gắn cờ IQR (tầng 2), gộp tên hãng, chuẩn cylinders,
 đưa nhãn phân loại về đúng miền trong DATA_CONTRACT.
 """
 
@@ -65,6 +65,11 @@ def standardize_labels(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     )
     for col in PLAIN_TEXT_COLUMNS:
         out[col] = normalize_text(out[col])
+    # Hợp đồng 1.1: seller_type ∈ {private, dealer, unknown}; 'owner' → 'private'.
+    seller = normalize_text(out["seller_type"]) if "seller_type" in out else pd.Series(
+        "unknown", index=out.index, dtype="string")
+    seller = seller.replace({"owner": "private"})
+    out["seller_type"] = seller.where(seller.isin({"private", "dealer"}), "unknown").astype("string")
     merged = int((manu != out["manufacturer_clean"]).sum())
     log.record("03_format", SHEET, "Chuẩn hóa nhãn chuỗi + gộp alias hãng",
                "Tránh trùng hãng do cách viết; nhãn ngoài miền hợp đồng → unknown",
@@ -89,39 +94,52 @@ def filter_ranges(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     out = df
     rules = (
         ("price", CONFIG.min_price_usd, CONFIG.max_price_usd, "Giá ảo/giá placeholder ngoài 500–150.000 USD"),
-        ("year", CONFIG.min_year, CONFIG.max_year, "Năm sản xuất ngoài 1950–2022"),
+        ("year", CONFIG.min_year, CONFIG.max_year, f"Năm model ngoài {CONFIG.min_year}–{CONFIG.max_year}"),
         ("odometer", 0, CONFIG.max_odometer_miles, "Số dặm âm hoặc > 500.000"),
     )
     for col, lo, hi, reason in rules:
         before = out
         out = out[out[col].between(lo, hi)]
         log.record("03_format", SHEET, f"Lọc miền {col} [{lo}, {hi}]", reason, before, out)
+    # Hợp đồng 1.1: năm model tối đa posting_year + 1 (xe đời sau bán sớm 1 năm là bình thường).
+    before = out
+    out = out[out["year"] <= out["posting_year"] + 1]
+    log.record("03_format", SHEET, "Lọc year > posting_year + 1",
+               "Năm model không thể vượt năm đăng tin quá 1 năm", before, out)
     return out
 
 
-def filter_price_by_group(df: pd.DataFrame, log: TransformLog, enabled: bool = False,
-                          k: float = 1.5, min_group: int = 30) -> pd.DataFrame:
-    """Tầng 2: lọc giá ngoại lệ theo quy tắc IQR trong từng hãng (Bài 4 · Boxplot).
+def flag_price_outliers(df: pd.DataFrame, log: TransformLog, k: float = 1.5,
+                        min_group: int = 30) -> pd.DataFrame:
+    """Tầng 2: GẮN CỜ giá ngoại lệ theo IQR trong từng hãng (Bài 4 · Boxplot).
 
-    Ngoại lệ: price ngoài [Q1 - k·IQR, Q3 + k·IQR] của CÙNG hãng. Lọc trên
-    log(price) vì giá lệch phải mạnh; IQR trên thang gốc sẽ cắt oan xe đắt.
-    Hãng có < ``min_group`` tin thì không lọc (IQR không ổn định).
-    TODO(M1-05): so sánh có/không bật ở Sheet 03 (rủi ro R1) rồi chốt với nhóm.
+    TV3 chốt (24/11): chỉ gắn cờ ``price_outlier_iqr`` rồi kiểm tra, KHÔNG lọc,
+    vì xe sang/xe hiếm có thể vượt ngưỡng mà giá vẫn hợp lệ.
+    - Ngưỡng [Q1 - k·IQR, Q3 + k·IQR] trên log(price) (giá lệch phải mạnh).
+    - Học ngưỡng CHỈ trên dòng train rồi áp cho cả val/test → không rò rỉ.
+    - Fallback: hãng có < ``min_group`` dòng train hoặc 'unknown' dùng ngưỡng
+      chung của toàn bộ train.
+    Cần cột split_set, nên gọi sau khi chia tập. Không xóa dòng.
     """
-    if not enabled:
-        log.record("03_format", SHEET, "Lọc giá tầng 2 IQR theo hãng (chưa bật)",
-                   "Chờ chốt; bật bằng --price-group-filter", df, df)
-        return df
-    logp = np.log(df["price"].astype("float64"))
-    g = logp.groupby(df["manufacturer_clean"])
-    q1, q3, n = g.transform("quantile", 0.25), g.transform("quantile", 0.75), g.transform("size")
+    out = df.copy()
+    logp = np.log(out["price"].astype("float64"))
+    is_train = out["split_set"].eq("train")
+    train = pd.DataFrame({"brand": out.loc[is_train, "manufacturer_clean"], "logp": logp[is_train]})
+    stats = train.groupby("brand")["logp"].agg(q1=lambda x: x.quantile(0.25),
+                                              q3=lambda x: x.quantile(0.75), n="size")
+    stats = stats[(stats["n"] >= min_group) & (stats.index != "unknown")]
+    g_q1, g_q3 = train["logp"].quantile(0.25), train["logp"].quantile(0.75)
+    brand = out["manufacturer_clean"]
+    q1 = brand.map(stats["q1"]).astype("float64").fillna(g_q1)
+    q3 = brand.map(stats["q3"]).astype("float64").fillna(g_q3)
     iqr = q3 - q1
-    # 'unknown' trộn nhiều hãng → "khác thường so với cùng hãng" không có nghĩa, không lọc.
-    skip = (n < min_group) | df["manufacturer_clean"].eq("unknown")
-    inside = logp.between(q1 - k * iqr, q3 + k * iqr) | skip
-    out = df[inside]
-    log.record("03_format", SHEET, f"Lọc giá tầng 2: IQR (k={k}) của log(price) theo hãng",
-               "Giá bất thường so với xe cùng hãng (quy tắc boxplot)", df, out)
+    flag = ~logp.between(q1 - k * iqr, q3 + k * iqr)
+    out["price_outlier_iqr"] = flag.astype(bool)
+    fallback = int((~brand.isin(stats.index)).sum())
+    log.record("03_format", SHEET, f"Gắn cờ price_outlier_iqr: IQR (k={k}) log(price) theo hãng",
+               f"Ngưỡng học trên train; {len(stats)} hãng đủ ≥{min_group} mẫu, "
+               f"{fallback} dòng dùng ngưỡng chung; chỉ gắn cờ, không lọc",
+               df, out, affected=int(flag.sum()))
     return out
 
 
@@ -169,6 +187,9 @@ def standardize_cylinders(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     out = df.copy()
     cyl = parse_cylinders(out["cylinders"])
     cyl = cyl.mask(cyl.isna() & out["fuel"].eq("electric"), 0.0)
+    # Hợp đồng 1.1: cờ ghi SAU khi tách số và quy đổi xe điện = 0, TRƯỚC khi điền.
+    # TV3 dùng cờ này để điền lại trong từng fold (học trên train).
+    out["cylinders_was_missing"] = cyl.isna().astype(bool)
     missing = int(cyl.isna().sum())
     for keys in (["manufacturer_clean", "model_clean"], ["manufacturer_clean"]):
         cyl = cyl.fillna(cyl.groupby([out[k] for k in keys]).transform("median"))
@@ -187,8 +208,7 @@ def drop_duplicate_ids(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     return out
 
 
-def run(df: pd.DataFrame, log: TransformLog, price_group_filter: bool = False,
-        dedup_vin: bool = False) -> pd.DataFrame:
+def run(df: pd.DataFrame, log: TransformLog, dedup_vin: bool = False) -> pd.DataFrame:
     df = drop_duplicate_ids(df, log)
     df = keep_us_only(df, log)
     df = standardize_labels(df, log)
@@ -197,6 +217,6 @@ def run(df: pd.DataFrame, log: TransformLog, price_group_filter: bool = False,
     # Bỏ trùng SAU khi lọc miền: nếu tin mới nhất có giá 0 ("gọi để biết giá")
     # thì vẫn giữ được tin cũ hợp lệ của cùng xe, thay vì mất cả chiếc xe.
     df = dedup_by_vin(df, log, enabled=dedup_vin)
-    df = filter_price_by_group(df, log, enabled=price_group_filter)
+    # Lọc giá tầng 2 (IQR) nay chỉ gắn cờ, chạy trong pipeline sau khi có split_set.
     df = standardize_cylinders(df, log)
     return df.reset_index(drop=True)

@@ -10,6 +10,7 @@ nên do TV3 khớp trong từng fold. Ở đây TV1 chỉ dùng quy tắc xác �
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.data.transform_log import TransformLog
@@ -64,16 +65,35 @@ TITLE_ALIASES: dict[str, str] = {
 }
 
 
+# Hãng con/thương hiệu tách ra: không tính là mâu thuẫn khi so hãng gốc với title.
+# Ram tách khỏi Dodge năm 2010 (tin cũ ghi "Dodge Ram"); Scion là thương hiệu của Toyota.
+BRAND_FAMILY: dict[str, str] = {"dodge": "ram", "scion": "toyota"}
+
+
+def _normalize_brand(values: pd.Series) -> pd.Series:
+    """Đưa tên hãng về cùng cách viết với formatter (vd 'rover' → 'land rover')."""
+    from src.data.formatter import MANUFACTURER_ALIASES, normalize_text
+    return normalize_text(values, default="").replace(MANUFACTURER_ALIASES).replace(BRAND_FAMILY)
+
+
 def rescue_manufacturer(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     """Cứu manufacturer bị thiếu từ title ('2022 Ford Explorer ST' → 'ford').
 
     Bỏ năm ở đầu tiêu đề rồi khớp từ khóa hãng ở ĐẦU chuỗi (tên dài ưu tiên,
     để 'land rover' thắng 'rover'). Chỉ khớp đầu chuỗi để tránh nhầm như
     'smart key'. Quy tắc xác định, không học từ giá → không rò rỉ.
+
+    Theo yêu cầu TV3, lưu nguồn suy diễn và kiểm tra mâu thuẫn:
+    - ``manufacturer_source``: 'original' (có sẵn) / 'title' (cứu từ title) / 'none'.
+    - ``manufacturer_title_conflict`` = True khi hãng gốc KHÁC hãng đọc được từ title
+      (chỉ gắn cờ, không sửa: không đủ căn cứ để biết bên nào đúng).
     """
-    if "title" not in df.columns:
-        return df
     out = df.copy()
+    if "title" not in out.columns:
+        out["manufacturer_source"] = out["manufacturer"].notna().map(
+            {True: "original", False: "none"}).astype("string")
+        out["manufacturer_title_conflict"] = False
+        return out
     known = {m.lower() for m in out["manufacturer"].dropna()}
     lookup = {k.replace("-", " "): k for k in known} | EXTRA_BRANDS | TITLE_ALIASES
     keys = sorted(lookup, key=len, reverse=True)
@@ -84,14 +104,44 @@ def rescue_manufacturer(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     # Chỉ tin tiêu đề mở đầu bằng năm sản xuất ('2019 Maserati ...'): tránh khớp
     # nhầm tin không phải xe như 'Smart key remote'.
     title = out["title"].fillna("").str.lower().str.replace("-", " ")
-    mask = out["manufacturer"].isna() & title.str.match(r"^\s*(19|20)\d{2}\s+")
-    text = title[mask].str.replace(r"^\s*\d{4}\s+", "", regex=True).str.strip()
-    missing_before = int(out["manufacturer"].isna().sum())
-    out.loc[mask, "manufacturer"] = text.map(find)
-    rescued = missing_before - int(out["manufacturer"].isna().sum())
+    has_year = title.str.match(r"^\s*(19|20)\d{2}\s+")
+    text = title.str.replace(r"^\s*\d{4}\s+", "", regex=True).str.strip()
+    original = out["manufacturer"].notna()
+    from_title = pd.Series(pd.NA, index=out.index, dtype="object")
+    from_title[has_year] = text[has_year].map(find)
+
+    missing_before = int((~original).sum())
+    out.loc[~original & has_year, "manufacturer"] = from_title[~original & has_year]
+    rescued_mask = ~original & out["manufacturer"].notna()
+    out["manufacturer_source"] = np.select([original, rescued_mask], ["original", "title"], "none")
+    out["manufacturer_source"] = out["manufacturer_source"].astype("string")
+
+    both = original & from_title.notna()
+    conflict = both & (_normalize_brand(out["manufacturer"]) != _normalize_brand(from_title.astype("string")))
+    out["manufacturer_title_conflict"] = conflict.astype(bool)
+
+    rescued = int(rescued_mask.sum())
     log.record("02_missing", SHEET, "Cứu manufacturer từ title",
-               f"Tiêu đề bắt đầu bằng năm + tên hãng; cứu {rescued}/{missing_before} dòng thiếu",
-               df, out, affected=rescued)
+               f"Tiêu đề bắt đầu bằng năm + tên hãng; cứu {rescued}/{missing_before} dòng thiếu; "
+               "lưu nguồn ở manufacturer_source", df, out, affected=rescued)
+    log.record("02_missing", SHEET, "Gắn cờ manufacturer_title_conflict",
+               f"Hãng gốc khác hãng trong title ở {int(conflict.sum())}/{int(both.sum())} dòng "
+               "đọc được cả hai; chỉ gắn cờ, không sửa", out, out, affected=int(conflict.sum()))
+    return out
+
+
+def flag_condition_missing(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
+    """``condition_missing`` = True khi condition gốc rỗng (trước khi điền 'unknown').
+
+    Tách khỏi ``condition_clean == 'unknown'`` (gồm cả nhãn lạ) để TV3 phân tích
+    nguyên nhân thiếu và thử qua CV (Bài 2 · Missingness Indicator).
+    """
+    out = df.copy()
+    raw = out["condition"].astype("string").str.strip()
+    out["condition_missing"] = (raw.isna() | raw.eq("")).fillna(True).astype(bool)
+    log.record("02_missing", SHEET, "Gắn cờ condition_missing",
+               "Giữ thông tin thiếu gốc trước khi điền 'unknown'", df, out,
+               affected=int(out["condition_missing"].sum()))
     return out
 
 
@@ -127,7 +177,7 @@ def run(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     df = rescue_manufacturer(df, log)
     df = handle_odometer(df, log)
     df = drop_unreliable_odometer(df, log)
-    # Ghi chú: condition thiếu 46% → giữ nhãn 'unknown' (Bài 2: giá trị cố định).
-    # Cột đánh dấu khuyết (Missingness Indicator) = (condition_clean == 'unknown'),
-    # TV3 tự suy ra được nên không cần thêm cột vào hợp đồng.
+    # condition thiếu 46% → formatter điền nhãn 'unknown' (Bài 2: giá trị cố định);
+    # cờ condition_missing giữ riêng phần thiếu gốc (TV3 đồng ý 24/11).
+    df = flag_condition_missing(df, log)
     return df

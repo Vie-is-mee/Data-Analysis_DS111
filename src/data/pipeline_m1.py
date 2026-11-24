@@ -34,15 +34,13 @@ class M1Result:
     log: TransformLog
 
 
-def build_clean_dataset(raw: pd.DataFrame, price_group_filter: bool = False,
-                        dedup_vin: bool = False) -> M1Result:
+def build_clean_dataset(raw: pd.DataFrame, dedup_vin: bool = False) -> M1Result:
     log = TransformLog()
     store = FormulaStore()
     log.record("01_load", "00_Log", "Đọc dữ liệu gốc", "Điểm xuất phát", raw, raw)
 
     df = missing_handler.run(raw, log)                                       # Sheet 02
-    df = formatter.run(df, log, price_group_filter=price_group_filter,
-                       dedup_vin=dedup_vin)                                  # Sheet 03
+    df = formatter.run(df, log, dedup_vin=dedup_vin)                         # Sheet 03
     # Từ đây không lọc dòng nữa: FormulaStore khóa index.
     df = feature_engineer.run(df, store)                                     # Sheet 04
     # Sheet 05 (mã hóa) do TV3 làm trong từng fold theo DATA_CONTRACT.
@@ -50,6 +48,7 @@ def build_clean_dataset(raw: pd.DataFrame, price_group_filter: bool = False,
     # split_set: dùng hàm chia chính thức của TV3 theo listing_id, seed 42
     # (không dựa vào giá). TODO: xác nhận với TV3 trước khi bàn giao V1.0.
     df["split_set"] = assign_production_splits(df["listing_id"].astype("int64"))
+    df = formatter.flag_price_outliers(df, log)                              # Sheet 03 (cờ)
 
     df = selector.to_contract(df, log)                                       # Sheet 06
     if len(df) < MIN_ROWS_TARGET:
@@ -70,13 +69,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=CONFIG.clean_parquet)
     p.add_argument("--store", type=Path, default=DEFAULT_STORE)
     p.add_argument("--log", type=Path, default=DEFAULT_LOG)
-    p.add_argument("--price-group-filter", action="store_true",
-                   help="Bật lọc giá tầng 2 (IQR theo hãng)")
     p.add_argument("--dedup-vin", action="store_true",
                    help="Bỏ tin đăng lại cùng VIN, giữ tin mới nhất")
     args = p.parse_args(argv)
 
-    result = build_clean_dataset(load_raw(args.raw), args.price_group_filter, args.dedup_vin)
+    result = build_clean_dataset(load_raw(args.raw), dedup_vin=args.dedup_vin)
     save(result, args.out, args.store, args.log)
     raw_rows = result.log.to_dataframe()["rows_before"].iloc[0]
     print(f"Giữ {len(result.data):,}/{raw_rows:,} dòng "

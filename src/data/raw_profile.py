@@ -22,6 +22,7 @@ PIPELINE_COLUMNS: tuple[str, ...] = (
     "type", "state", "posting_date",
     # Cột phụ trợ làm sạch (Sheet 01: "giữ (phụ trợ làm sạch)"), không vào file bàn giao
     "title", "VIN", "address_country", "odometer_broken", "odometer_rolled_over",
+    "seller_type",  # cột bổ sung hợp đồng 1.1 (private/dealer/unknown)
 )
 NUMERIC_RAW: tuple[str, ...] = ("id", "price", "year", "odometer")
 # Cột có thể chứa dữ liệu cá nhân/định danh (SĐT, địa chỉ, VIN, tọa độ, link):

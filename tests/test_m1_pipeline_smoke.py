@@ -34,6 +34,7 @@ def _fake_raw(n: int = 800, seed: int = 0) -> pd.DataFrame:
         "address_country": "US",
         "odometer_broken": 0,
         "odometer_rolled_over": 0,
+        "seller_type": rng.choice(["dealer", "owner", None], n),
     })
     # Lỗi điển hình: giá 0/ảo, năm lạ, odometer khuyết, id trùng.
     df.loc[:9, "price"] = 0
@@ -118,15 +119,81 @@ def test_dedup_vin_keeps_valid_older_listing_when_newest_has_no_price(tmp_path):
     assert ids[200] in kept and ids[201] not in kept
 
 
-def test_price_iqr_filter_removes_group_outliers(tmp_path):
+def test_price_iqr_flags_outliers_without_dropping_rows(tmp_path):
     raw = _fake_raw(1_500, seed=1)
     raw["manufacturer"] = "ford"
     raw["price"] = np.random.default_rng(1).integers(10_000, 20_000, len(raw))
     raw.loc[:4, "price"] = 140_000   # trong miền tầng 1 nhưng bất thường với hãng
     raw_csv = tmp_path / "vehicles.csv"
     raw.to_csv(raw_csv, index=False)
-    data = build_clean_dataset(load_raw(raw_csv), price_group_filter=True).data
-    assert data["price"].max() < 140_000
+    data = build_clean_dataset(load_raw(raw_csv)).data.set_index("listing_id")
+    # TV3 chốt: chỉ gắn cờ, không xóa dòng.
+    assert set(raw.loc[:4, "id"]) <= set(data.index)
+    assert data.loc[raw.loc[:4, "id"], "price_outlier_iqr"].all()
+    assert data["price_outlier_iqr"].mean() < 0.05
+
+
+def test_iqr_bounds_learned_on_train_only(tmp_path):
+    """Đổi giá của dòng val/test không được làm đổi cờ của dòng train."""
+    raw = _fake_raw(1_500, seed=2)
+    raw["manufacturer"] = "ford"
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    base = build_clean_dataset(load_raw(raw_csv)).data.set_index("listing_id")
+    holdout = base.index[base["split_set"].ne("train")]
+    raw.loc[raw["id"].isin(holdout), "price"] = 149_000
+    raw.to_csv(raw_csv, index=False)
+    again = build_clean_dataset(load_raw(raw_csv)).data.set_index("listing_id")
+    train = base.index[base["split_set"].eq("train")]
+    assert again.loc[train, "price_outlier_iqr"].equals(base.loc[train, "price_outlier_iqr"])
+
+
+def test_condition_missing_and_manufacturer_source(tmp_path):
+    raw = _fake_raw()
+    ids = raw["id"]
+    raw.loc[200, "condition"] = pd.NA          # thiếu thật
+    raw.loc[201, "condition"] = "mint"         # nhãn lạ → unknown nhưng KHÔNG thiếu
+    raw.loc[202, ["manufacturer", "title"]] = [pd.NA, "2019 Maserati Ghibli S"]
+    raw.loc[203, ["manufacturer", "title"]] = ["ford", "2015 Toyota Camry"]     # mâu thuẫn
+    raw.loc[204, ["manufacturer", "title"]] = ["rover", "2016 Land Rover LR4"]  # alias, không mâu thuẫn
+    raw.loc[205, ["manufacturer", "title"]] = [pd.NA, "Smart key remote"]
+    raw.loc[206, ["manufacturer", "title"]] = ["ram", "2008 Dodge Ram 1500"]  # cùng gia đình hãng
+    for r in range(200, 207):
+        raw.loc[r, ["price", "year", "odometer"]] = [15_000, 2015, 50_000]
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    data = build_clean_dataset(load_raw(raw_csv)).data.set_index("listing_id")
+
+    assert data.loc[ids[200], "condition_missing"]
+    assert data.loc[ids[201], ["condition_missing", "condition_clean"]].tolist() == [False, "unknown"]
+    assert data.loc[ids[202], "manufacturer_source"] == "title"
+    assert data.loc[ids[203], ["manufacturer_source", "manufacturer_title_conflict"]].tolist() == ["original", True]
+    assert not data.loc[ids[204], "manufacturer_title_conflict"]
+    assert not data.loc[ids[206], "manufacturer_title_conflict"]
+    assert data.loc[ids[205], "manufacturer_source"] == "none"
+    assert set(data["manufacturer_source"]) <= {"original", "title", "none"}
+
+
+def test_contract_11_extra_columns(tmp_path):
+    """DATA_CONTRACT 1.1: cờ boolean không rỗng, seller_type private/dealer/unknown."""
+    raw = _fake_raw()
+    raw.loc[300, ["cylinders", "fuel"]] = [pd.NA, "electric"]   # điện → 0, không tính khuyết
+    raw.loc[301, ["cylinders", "fuel"]] = ["other", "gas"]      # không tách được số → khuyết
+    for r in (300, 301):
+        raw.loc[r, ["price", "year", "odometer"]] = [15_000, 2015, 50_000]
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    data = build_clean_dataset(load_raw(raw_csv)).data.set_index("listing_id")
+    for flag in ("condition_missing", "cylinders_was_missing", "manufacturer_title_conflict",
+                 "price_outlier_iqr"):
+        assert data[flag].dtype == bool and data[flag].notna().all(), flag
+    assert set(data["seller_type"]) <= {"private", "dealer", "unknown"}
+    assert "owner" not in set(data["seller_type"]) and "private" in set(data["seller_type"])
+    ids = raw["id"]
+    assert data.loc[ids[300], ["cylinders_num", "cylinders_was_missing"]].tolist() == [0.0, False]
+    assert data.loc[ids[301], "cylinders_was_missing"]
+    assert data["cylinders_num"].notna().all()
+    assert (data["car_age_squared"] == data["car_age"].astype(float) ** 2).all()
 
 
 def test_raw_profile_has_decision_columns(tmp_path):

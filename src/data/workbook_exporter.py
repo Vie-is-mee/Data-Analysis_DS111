@@ -58,13 +58,15 @@ MISSING_METHODS: list[tuple[str, str, str, str]] = [
     ("odometer", "Xóa dòng; xóa cả dòng đồng hồ hỏng/quay vòng",
      "Điền theo nhóm là học từ dữ liệu trước khi chia tập; số dặm tự báo sai không tin cậy",
      "Bài 2 · Xóa dòng"),
-    ("manufacturer", "Cứu từ title, còn lại → 'unknown'",
+    ("manufacturer", "Cứu từ title, còn lại → 'unknown'; lưu nguồn ở manufacturer_source, "
+     "gắn cờ manufacturer_title_conflict khi hãng gốc ≠ hãng trong title",
      "Thiếu không ngẫu nhiên: hãng ngoài danh sách 42 hãng của Craigslist",
      "Bài 2 · Tạo đặc trưng từ chuỗi + giá trị cố định"),
-    ("condition", "→ 'unknown' (nhãn riêng)",
-     "Thiếu 46%: điền mode sẽ bóp méo phân phối; 'unknown' = Missingness Indicator",
+    ("condition", "→ 'unknown' (nhãn riêng) + cờ condition_missing (thiếu gốc)",
+     "Thiếu 46%: điền mode sẽ bóp méo phân phối; condition_missing tách thiếu thật khỏi nhãn lạ",
      "Bài 2 · Giá trị cố định / Missingness Indicator"),
-    ("cylinders", "Xe điện → 0; còn lại median theo (hãng, dòng xe) → hãng → toàn bộ",
+    ("cylinders", "Xe điện → 0; còn lại median theo (hãng, dòng xe) → hãng → toàn bộ; "
+     "cờ cylinders_was_missing để TV3 điền lại trong từng fold",
      "Hợp đồng yêu cầu số hữu hạn; median bền với ngoại lệ", "Bài 2 · Median"),
     ("title_status", "→ 'unknown'", "Nhãn pháp lý, không suy đoán được", "Bài 2 · Giá trị cố định"),
     ("fuel / transmission / drive / type", "→ 'unknown'", "Biến phân loại, giữ dòng",
@@ -81,15 +83,34 @@ ENCODING_PLAN: dict[str, tuple[str, str, str]] = {
 for _c in LOW_CARDINALITY_CATEGORICAL:
     ENCODING_PLAN[_c] = ("Định tính không thứ tự, ít nhãn", "One-Hot", "")
 for _c in HIGH_CARDINALITY_CATEGORICAL:
-    ENCODING_PLAN[_c] = ("Định tính không thứ tự, nhiều nhãn", "Target Encoding theo fold (TV3)",
-                         "Ngoài slide (slide dạy Label/One-Hot/Ordinal) — cần giải thích khi bảo vệ")
+    ENCODING_PLAN[_c] = ("Định tính không thứ tự, nhiều nhãn", "One-Hot; đối chứng Label Encoding",
+                         "Target Encoding theo fold chỉ ở phần mở rộng (ngoài slide)")
+# TV3 chốt 24/11: One-Hot cho hãng, Ordinal cho tình trạng, Label Encoding làm đối chứng.
+ENCODING_PLAN["manufacturer_clean"] = ("Định tính không thứ tự (~60 hãng)", "One-Hot (nhánh chính)",
+                                       "Label Encoding làm đối chứng; Target Encoding = mở rộng")
+ENCODING_PLAN["condition_clean"] = ("Định tính có thứ tự", "Ordinal (salvage=0 … new=5)",
+                                    "'unknown' tách cờ riêng; thêm condition_missing để thử qua CV")
+for _c, _v in {
+    "condition_missing": ("Cờ boolean", "Giữ nguyên 0/1", "Thiếu gốc (khác nhãn lạ); phục vụ EDA"),
+    "cylinders_was_missing": ("Cờ boolean", "Không đưa vào mô hình",
+                              "TV3 dùng để điền lại cylinders trong từng fold (học trên train)"),
+    "seller_type": ("Định tính không thứ tự, 3 nhãn", "One-Hot (nếu dùng)",
+                    "private/dealer/unknown; hiện phục vụ EDA và báo cáo VIN theo người bán"),
+    "manufacturer_title_conflict": ("Cờ boolean", "Không đưa vào mô hình", "Dùng để kiểm tra dữ liệu"),
+    "price_outlier_iqr": ("Cờ boolean", "Không đưa vào mô hình (dùng để lọc thử train)",
+                          "Ngưỡng học trên train; test giữ nguyên"),
+}.items():
+    ENCODING_PLAN[_c] = _v
 
 COLUMN_ROLES: dict[str, str] = {
     "listing_id": "Khóa", "price": "Mục tiêu (USD)", "log_price": "Mục tiêu (log)",
     "split_set": "Chia tập (TV3)", "year_era": "Nhóm phân tích (TV2)",
     "model_clean": "Mô tả (quá nhiều nhãn)", "region": "Mô tả", "posting_year": "Trung gian",
+    "condition_missing": "Cờ (EDA, thử qua CV)", "cylinders_was_missing": "Cờ (TV3 điền lại trong fold)",
+    "seller_type": "Mô tả (EDA)", "manufacturer_source": "Truy vết",
+    "manufacturer_title_conflict": "Cờ kiểm tra", "price_outlier_iqr": "Cờ kiểm tra (TV3 thử lọc train)",
 }
-NUMERIC_FEATURES = ["car_age", "year", "odometer", "log_odometer", "miles_per_year", "cylinders_num"]
+NUMERIC_FEATURES = ["car_age", "car_age_squared", "year", "odometer", "log_odometer", "miles_per_year", "cylinders_num"]
 
 # Cặp (cột gốc, cột sạch) cho Sheet 07
 COMPARE_PAIRS = [
@@ -166,7 +187,7 @@ def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.D
     dictionary = pd.DataFrame([
         {"Cột": c, "Kiểu": t, "Vai trò": COLUMN_ROLES.get(c, "Đặc trưng"),
          "Số giá trị khác nhau": int(clean[c].nunique())}
-        for c, t in REQUIRED_CLEAN_SCHEMA.items()
+        for c, t in (dict(REQUIRED_CLEAN_SCHEMA) | selector.EXTRA_COLUMNS).items() if c in clean.columns
     ])
     cols = NUMERIC_FEATURES + ["log_price"]
     target_corr = []
@@ -260,11 +281,12 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
     ws = book["05_Encoding"]
     r = _write_title(ws, 1, "Kế hoạch mã hóa — TV1 bàn giao nhãn dạng chuỗi, TV3 mã hóa trong từng fold")
     r = _write_table(ws, build_sheet05(clean), r)
-    ws.cell(r, 1, "Nhánh chính không dùng Label Encoding cho biến không thứ tự (Gate 1).")
+    ws.cell(r, 1, "Nhánh chính (theo slide Bài 2): One-Hot cho biến không thứ tự, Ordinal cho condition; "
+                  "Label Encoding chỉ làm đối chứng. TV3 fit encoder trên train trong pipeline (Exp3A/3B).")
 
     dictionary, target_corr, matrix, vif = build_sheet06(clean)
     ws = book["06_Selection"]
-    r = _write_title(ws, 1, "Từ điển 22 cột bàn giao")
+    r = _write_title(ws, 1, "Từ điển cột bàn giao (22 cột hợp đồng + cột cờ bổ sung)")
     r = _write_table(ws, dictionary, r)
     r = _write_title(ws, r, "Tương quan với log_price (Bài 4: Pearson/Spearman kèm p-value)")
     r = _write_table(ws, target_corr, r)
@@ -278,7 +300,7 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
                        mid_type="num", mid_value=0, mid_color="FFFFFF",
                        end_type="num", end_value=1, end_color="F8696B"),
     )
-    r = _write_title(ws, r, "VIF (bổ sung; > 5 cảnh báo, > 10 nghiêm trọng)")
+    r = _write_title(ws, r, "VIF — phần mở rộng ngoài slide (> 5 cảnh báo, > 10 nghiêm trọng)")
     _write_table(ws, vif, r)
 
     ws = book["07_Sample_Comparison"]

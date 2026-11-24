@@ -178,3 +178,80 @@ Bài học cho báo cáo: thứ tự các bước làm sạch ảnh hưởng k�
   ('6 cylinders' → 6) → so sánh sau khi tách số.
 
 Kiểm thử: 8/8 test M1 pass (thêm 2 test exporter: giữ sheet M3, mẫu Sheet 07 cố định).
+
+## 24/11/2026 · Ngày 2 (tiếp) — Làm theo phản hồi của M3
+
+M3 trả lời (một phần): M1-08 → TV1 chuẩn hóa nhãn + giải thích ma trận mã hóa, **TV3 fit encoder**
+(Exp3A/3B); M1-11 vẫn là ABT sạch của TV1. Đồng ý thêm `condition_missing`; cứu hãng từ title
+được nếu **lưu nguồn suy diễn và kiểm tra mâu thuẫn**; IQR theo hãng **chỉ gắn cờ rồi kiểm tra**,
+ngưỡng học trên train, giữ nguyên test; trình bày chính bám slide (OLS/Ridge, One-Hot hãng,
+Ordinal condition, Label Encoding làm đối chứng, MSE/RMSE/R² trên USD); VIF, Target Encoding,
+Duan, MAPE, Adj-R², LightGBM để phần mở rộng; giữ 70/15/15.
+
+### Thay đổi
+- Parquet bàn giao có **22 cột hợp đồng + 4 cột cờ** (validator cho phép cột thừa):
+
+| Cột | Ý nghĩa | Số liệu thật (243.467 dòng) |
+|---|---|---|
+| `condition_missing` | 1 = condition gốc rỗng, trước khi điền 'unknown' | 106.477 (43,7%) |
+| `manufacturer_source` | original / title / none | 235.423 / 3.267 / 4.777 |
+| `manufacturer_title_conflict` | 1 = hãng gốc ≠ hãng đọc được từ title | 504 |
+| `price_outlier_iqr` | 1 = ngoài 1,5·IQR của log(price) cùng hãng | 4.553 (1,87%) |
+
+- **IQR: bỏ lọc, đổi thành gắn cờ** (`formatter.flag_price_outliers`), chạy sau khi có `split_set`.
+  Q1/Q3 chỉ tính trên dòng train; hãng có < 30 dòng train hoặc 'unknown' dùng ngưỡng chung của
+  toàn train (fallback, 4.961 dòng). Bỏ tùy chọn `--price-group-filter`. Số dòng không đổi.
+  Tỉ lệ cờ đều giữa các tập (train 1,87% / val 1,92% / test 1,83%); 3.825 ca giá thấp
+  bất thường, 728 ca giá cao. Có test chứng minh đổi giá val/test không làm đổi cờ train.
+- Sheet 05: hãng → One-Hot (nhánh chính), Label Encoding làm đối chứng, Target Encoding = mở rộng;
+  condition → Ordinal + cờ. Sheet 06: VIF ghi rõ là phần mở rộng; từ điển có thêm 4 cột cờ.
+
+### Phát hiện khi kiểm tra mâu thuẫn hãng (đưa vào báo cáo)
+- Lần chạy đầu báo 4.613 ca "mâu thuẫn", nhưng xem cặp (hãng gốc, 2 từ đầu title) thì
+  **3.824 ca là `ram` ↔ "Dodge Ram"** (Ram tách khỏi Dodge năm 2010, tin xe cũ vẫn ghi Dodge)
+  và ~120 ca `toyota` ↔ "Scion" (thương hiệu con của Toyota). Đây không phải lỗi.
+  → Thêm `BRAND_FAMILY` (dodge≈ram, scion≈toyota) khi so sánh → còn **504 ca** lệch thật
+  (ví dụ người bán chọn "mini" cho xe Honda Odyssey — có lẽ nhầm với minivan).
+- Chỉ gắn cờ, không sửa: không đủ căn cứ biết bên nào đúng.
+- `condition_missing` trùng khớp hoàn toàn với `condition_clean == 'unknown'` trên dữ liệu thật
+  (không có nhãn condition lạ), khác nhau chỉ ở dữ liệu giả lập test.
+
+Kiểm thử: 23/23 test pass (thêm test cờ IQR, ngưỡng chỉ học từ train, condition_missing,
+nguồn hãng, gia đình hãng). Validator 33/33 PASS; giữ 243.467/295.451 dòng như trước.
+
+Còn chờ M3: max_year 2027, bật dedup VIN, cách điền cylinders, seller_type. Cần M3 ghi
+4 cột cờ mới vào DATA_CONTRACT (vùng `docs/` của M3, M1 không tự sửa).
+
+## 24/11/2026 · Ngày 2 (tối) — Khớp DATA_CONTRACT 1.1 của M3 (nhánh `feature/m3-data-2026`)
+
+Đọc bảng theo dõi (Drive, M3 sửa 24/11) + nhánh mới của M3. M3 đã chốt: **năm model tới 2027**
+và `year ≤ posting_year + 1`; cờ `condition_missing`, `cylinders_was_missing` dạng **boolean**;
+`seller_type` (private/dealer/unknown, `owner` → `private`); xử lý VIN bằng **chữ số kiểm tra
+49 CFR 565.15** (`src/core/vin_reposts.py`) và chia tập theo **nhóm xe** (`split_manifest.py`);
+One-Hot cho cả `manufacturer_clean` và `state`. M1-07 có thêm "tuổi xe bậc 2".
+
+### Đã làm
+- Đổi 4 cờ sang `bool` (trước là int8, validator mới của M3 sẽ FAIL).
+- Thêm `cylinders_was_missing` (ghi sau khi tách số và quy xe điện = 0, trước khi điền median)
+  để TV3 điền lại trong từng fold: 63.703 dòng.
+- Thêm `seller_type`: dealer 174.510 / private 68.957. Giá trung vị dealer 13.495 vs private 7.500.
+- Thêm quy tắc `year ≤ posting_year + 1` (hiện chưa loại dòng nào vì max_year vẫn 2022 trên nhánh M1).
+- **M1-07**: thêm `car_age_squared` vào FormulaStore (6 công thức), đặt đúng tên M3 dùng trong
+  ablation → không lệch. Hồi quy log_price ~ car_age: R² = 0,034; thêm car_age²: **R² = 0,192**
+  (đỉnh parabol ≈ 32 năm: xe trên ~32 tuổi lại tăng giá — xe cổ). Đưa vào slide Bài 5.
+- Validator: bản hiện tại 33/33 PASS; **bản 1.1 của M3 (chạy trong worktree tạm) 36/36 PASS**.
+
+### Ước lượng khi chuyển max_year = 2027 (chạy thử, chưa đổi config — config là vùng M3)
+| | max_year 2022 | max_year 2027 |
+|---|---|---|
+| Số dòng | 243.467 | **272.563** (+29.096) |
+| Giá trung vị | 11.749 | 12.995 |
+| car_age min | 4 | 0 |
+Xe đời 2023–2027: 9.587 / 8.388 / 6.807 / 3.985 / 329. Không dòng nào vi phạm `year ≤ posting_year + 1`.
+
+### Còn lại (cần M1 làm tiếp)
+1. Gộp nhánh M3 (`feature/m3-data-2026`) vào nhánh M1 để có max_year 2027 + validator/manifest mới.
+2. Xuất `data/processed/vin_candidates_local.parquet` (listing_id, VIN, posting_date sau lọc nghiệp
+   vụ, trước gộp tin) — chỉ lưu nội bộ, không lên Git. M3 tạo manifest; M1 lọc ABT theo ID được giữ
+   và lấy `split_set` từ manifest (thay `assign_production_splits` + bỏ `dedup_by_vin` của M1).
+3. Báo số dòng + giá trung vị trước/sau gộp VIN **theo seller_type** (yêu cầu M1-11 / hợp đồng).
