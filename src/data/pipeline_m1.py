@@ -24,6 +24,7 @@ from src.models.ablation_runner import assign_production_splits
 
 DEFAULT_STORE = CONFIG.clean_parquet.with_name("formula_store_v1.joblib")
 DEFAULT_LOG = CONFIG.clean_parquet.with_name("m1_transform_log.csv")
+MIN_ROWS_TARGET = 200_000  # mục tiêu số dòng sạch (M1-06, rủi ro R1)
 
 
 @dataclass(slots=True)
@@ -33,13 +34,15 @@ class M1Result:
     log: TransformLog
 
 
-def build_clean_dataset(raw: pd.DataFrame, price_group_filter: bool = False) -> M1Result:
+def build_clean_dataset(raw: pd.DataFrame, price_group_filter: bool = False,
+                        dedup_vin: bool = False) -> M1Result:
     log = TransformLog()
     store = FormulaStore()
     log.record("01_load", "00_Log", "Đọc dữ liệu gốc", "Điểm xuất phát", raw, raw)
 
     df = missing_handler.run(raw, log)                                       # Sheet 02
-    df = formatter.run(df, log, price_group_filter=price_group_filter)       # Sheet 03
+    df = formatter.run(df, log, price_group_filter=price_group_filter,
+                       dedup_vin=dedup_vin)                                  # Sheet 03
     # Từ đây không lọc dòng nữa: FormulaStore khóa index.
     df = feature_engineer.run(df, store)                                     # Sheet 04
     # Sheet 05 (mã hóa) do TV3 làm trong từng fold theo DATA_CONTRACT.
@@ -49,8 +52,8 @@ def build_clean_dataset(raw: pd.DataFrame, price_group_filter: bool = False) -> 
     df["split_set"] = assign_production_splits(df["listing_id"].astype("int64"))
 
     df = selector.to_contract(df, log)                                       # Sheet 06
-    if len(df) < CONFIG.mock_sample_rows:
-        print(f"[CẢNH BÁO] Chỉ còn {len(df):,} dòng")
+    if len(df) < MIN_ROWS_TARGET:
+        print(f"[CẢNH BÁO] Chỉ còn {len(df):,} dòng (< {MIN_ROWS_TARGET:,}, rủi ro R1)")
     return M1Result(df, store, log)
 
 
@@ -67,10 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=CONFIG.clean_parquet)
     p.add_argument("--store", type=Path, default=DEFAULT_STORE)
     p.add_argument("--log", type=Path, default=DEFAULT_LOG)
-    p.add_argument("--price-group-filter", action="store_true", help="Bật lọc giá tầng 2")
+    p.add_argument("--price-group-filter", action="store_true",
+                   help="Bật lọc giá tầng 2 (IQR theo hãng)")
+    p.add_argument("--dedup-vin", action="store_true",
+                   help="Bỏ tin đăng lại cùng VIN, giữ tin mới nhất")
     args = p.parse_args(argv)
 
-    result = build_clean_dataset(load_raw(args.raw), args.price_group_filter)
+    result = build_clean_dataset(load_raw(args.raw), args.price_group_filter, args.dedup_vin)
     save(result, args.out, args.store, args.log)
     raw_rows = result.log.to_dataframe()["rows_before"].iloc[0]
     print(f"Giữ {len(result.data):,}/{raw_rows:,} dòng "

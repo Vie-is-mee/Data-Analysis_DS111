@@ -18,7 +18,8 @@ from src.data.transform_log import TransformLog
 
 SHEET = "03_Format"
 
-# TODO(M1-05): bổ sung sau khi xem danh sách nhãn thật ở Sheet 01.
+# Sheet 01: dữ liệu thật dùng 'alfa-romeo', 'aston-martin' (có gạch) → giữ nguyên.
+# 'rover' (2.581 tin) và 'land rover' (14 tin) là cùng một hãng → gộp.
 MANUFACTURER_ALIASES: dict[str, str] = {
     "chevy": "chevrolet",
     "chev": "chevrolet",
@@ -29,7 +30,8 @@ MANUFACTURER_ALIASES: dict[str, str] = {
     "benz": "mercedes-benz",
     "rover": "land rover",
     "landrover": "land rover",
-    "alfa-romeo": "alfa romeo",
+    "alfa romeo": "alfa-romeo",
+    "aston martin": "aston-martin",
     "harley davidson": "harley-davidson",
 }
 # Cột chuỗi giữ tên gốc trong hợp đồng (chỉ chuẩn hóa chữ thường + unknown).
@@ -98,20 +100,61 @@ def filter_ranges(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
 
 
 def filter_price_by_group(df: pd.DataFrame, log: TransformLog, enabled: bool = False,
-                          lower_q: float = 0.01, upper_q: float = 0.99) -> pd.DataFrame:
-    """Tầng 2: lọc giá ảo theo phân vị trong từng hãng.
+                          k: float = 1.5, min_group: int = 30) -> pd.DataFrame:
+    """Tầng 2: lọc giá ngoại lệ theo quy tắc IQR trong từng hãng (Bài 4 · Boxplot).
 
-    TODO(M1-05): chọn ngưỡng và bật ``enabled``; giữ bảng đối chứng 2 cách lọc
-    ở Sheet 03 (rủi ro R1). Quy tắc dùng giá nên cần TV3 đồng ý.
+    Ngoại lệ: price ngoài [Q1 - k·IQR, Q3 + k·IQR] của CÙNG hãng. Lọc trên
+    log(price) vì giá lệch phải mạnh; IQR trên thang gốc sẽ cắt oan xe đắt.
+    Hãng có < ``min_group`` tin thì không lọc (IQR không ổn định).
+    TODO(M1-05): so sánh có/không bật ở Sheet 03 (rủi ro R1) rồi chốt với nhóm.
     """
     if not enabled:
-        log.record("03_format", SHEET, "Lọc giá tầng 2 (chưa bật)", "Chờ chốt ngưỡng", df, df)
+        log.record("03_format", SHEET, "Lọc giá tầng 2 IQR theo hãng (chưa bật)",
+                   "Chờ chốt; bật bằng --price-group-filter", df, df)
         return df
-    g = df.groupby("manufacturer_clean")["price"]
-    lo, hi = g.transform(lambda s: s.quantile(lower_q)), g.transform(lambda s: s.quantile(upper_q))
-    out = df[df["price"].between(lo, hi)]
-    log.record("03_format", SHEET, f"Lọc giá tầng 2 theo hãng [{lower_q}, {upper_q}]",
-               "Giá bất thường so với cùng hãng", df, out)
+    logp = np.log(df["price"].astype("float64"))
+    g = logp.groupby(df["manufacturer_clean"])
+    q1, q3, n = g.transform("quantile", 0.25), g.transform("quantile", 0.75), g.transform("size")
+    iqr = q3 - q1
+    # 'unknown' trộn nhiều hãng → "khác thường so với cùng hãng" không có nghĩa, không lọc.
+    skip = (n < min_group) | df["manufacturer_clean"].eq("unknown")
+    inside = logp.between(q1 - k * iqr, q3 + k * iqr) | skip
+    out = df[inside]
+    log.record("03_format", SHEET, f"Lọc giá tầng 2: IQR (k={k}) của log(price) theo hãng",
+               "Giá bất thường so với xe cùng hãng (quy tắc boxplot)", df, out)
+    return out
+
+
+def keep_us_only(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
+    """535 tin ở Canada: giá có thể là CAD → loại để giữ một đơn vị USD."""
+    if "address_country" not in df.columns:
+        return df
+    out = df[df["address_country"].fillna("US").str.upper().ne("CA")]
+    log.record("03_format", SHEET, "Loại tin ngoài Mỹ (address_country = CA)",
+               "Đơn vị giá có thể là CAD, không đồng nhất USD", df, out)
+    return out
+
+
+def dedup_by_vin(df: pd.DataFrame, log: TransformLog, enabled: bool = False) -> pd.DataFrame:
+    """Tin đăng lại cùng một xe (cùng VIN 17 ký tự) → giữ tin đăng mới nhất.
+
+    Bài 2/3: loại bỏ trùng lặp. Lý do thêm: cùng một xe nằm ở cả train và test
+    gây rò rỉ. Dòng không có VIN hợp lệ không bị đụng tới (không đủ căn cứ).
+    TODO: chờ TV3 đồng ý rồi bật bằng --dedup-vin.
+    """
+    if not enabled or "VIN" not in df.columns:
+        log.record("03_format", SHEET, "Bỏ trùng VIN (chưa bật)", "Chờ TV3 xác nhận", df, df)
+        return df
+    vin = df["VIN"].astype("string").str.strip().str.upper()
+    posted = pd.to_datetime(df["posting_date"], errors="coerce", utc=True)
+    valid = vin.str.fullmatch(r"[A-HJ-NPR-Z0-9]{17}").fillna(False)
+    # Sắp xếp ổn định: ngày đăng mới nhất trước, hòa thì id lớn hơn trước → chạy lại ra cùng kết quả.
+    order = pd.DataFrame({"posted": posted, "id": df["id"]})[valid]
+    newest_first = order.sort_values(["posted", "id"], ascending=False, kind="mergesort").index
+    dup = vin.loc[newest_first].duplicated(keep="first")
+    out = df.drop(index=dup[dup].index)
+    log.record("03_format", SHEET, "Bỏ tin trùng VIN, giữ tin đăng mới nhất",
+               "Cùng một xe đăng nhiều lần; tránh lặp mẫu giữa train/test", df, out)
     return out
 
 
@@ -144,11 +187,16 @@ def drop_duplicate_ids(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     return out
 
 
-def run(df: pd.DataFrame, log: TransformLog, price_group_filter: bool = False) -> pd.DataFrame:
+def run(df: pd.DataFrame, log: TransformLog, price_group_filter: bool = False,
+        dedup_vin: bool = False) -> pd.DataFrame:
     df = drop_duplicate_ids(df, log)
+    df = keep_us_only(df, log)
     df = standardize_labels(df, log)
     df = parse_dates(df, log)
     df = filter_ranges(df, log)
+    # Bỏ trùng SAU khi lọc miền: nếu tin mới nhất có giá 0 ("gọi để biết giá")
+    # thì vẫn giữ được tin cũ hợp lệ của cùng xe, thay vì mất cả chiếc xe.
+    df = dedup_by_vin(df, log, enabled=dedup_vin)
     df = filter_price_by_group(df, log, enabled=price_group_filter)
     df = standardize_cylinders(df, log)
     return df.reset_index(drop=True)
