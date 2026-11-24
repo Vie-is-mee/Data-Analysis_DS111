@@ -29,6 +29,9 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     parser.add_argument(
         "--fast", action="store_true", help="Giảm số cây, giữ nguyên các split và fold."
     )
+    parser.add_argument(
+        "--split-manifest", type=Path, help="Manifest đã khóa cho production."
+    )
     args = parser.parse_args(argv)
     start = perf_counter()
 
@@ -42,7 +45,11 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     if not validate_handoff_dataset(path).passed:
         return 1
     suite = AblationExperimentSuite.from_parquet(
-        path, mock=mock, fast_mode=args.fast, config=config
+        path,
+        mock=mock,
+        fast_mode=args.fast,
+        config=config,
+        split_manifest=args.split_manifest,
     )
     assignments = suite.split_assignments
     counts = assignments["split_set"].value_counts().to_dict()
@@ -52,6 +59,8 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
 
     print("[3/6] Tính VIF và ranking trên train")
     train = suite.train_data
+    if not mock and "cylinders_was_missing" in train:
+        train = train.loc[~train["cylinders_was_missing"]]
     with threadpool_limits(limits=1, user_api="blas"):
         vif = compute_vif_table(train, ["year", "posting_year", *LINEARIZED_NUMERIC])
         ranking = rank_features_on_common_support(train, list(LINEARIZED_NUMERIC))
@@ -68,9 +77,12 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     summary.to_csv(
         config.models_dir / "ablation_summary.csv", index=False, encoding="utf-8-sig"
     )
-    assignments.to_parquet(
-        config.models_dir / "split_assignments.parquet", engine="pyarrow", index=False
-    )
+    split_output = config.models_dir / "split_assignments.parquet"
+    if (
+        args.split_manifest is None
+        or args.split_manifest.resolve() != split_output.resolve()
+    ):
+        assignments.to_parquet(split_output, engine="pyarrow", index=False)
 
     print("[6/6] Xuất dự báo test và Workbook TV3")
     test = suite.test_data

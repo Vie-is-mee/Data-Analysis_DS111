@@ -129,6 +129,60 @@ class NaiveLabelEncodingTransformer(TransformerMixin, BaseEstimator):
         return np.asarray([f"{col}_label" for col in columns], dtype=object)
 
 
+class CylinderModeImputer(TransformerMixin, BaseEstimator):
+    """Khôi phục vị trí đã điền ở ABT rồi học mode từ train của fold."""
+
+    columns = ("manufacturer_clean", "model_clean", "cylinders_was_missing")
+
+    @staticmethod
+    def _group_modes(observed, keys):
+        counts = (
+            observed.groupby([*keys, "cylinders_num"])["cylinders_num"]
+            .size()
+            .rename("observations")
+            .reset_index()
+        )
+        return (
+            counts.sort_values(
+                ["observations", "cylinders_num"], ascending=[False, True]
+            )
+            .drop_duplicates(keys)
+            .set_index(keys)["cylinders_num"]
+        )
+
+    def fit(self, X, y=None):
+        observed = X.loc[
+            ~X["cylinders_was_missing"],
+            ["manufacturer_clean", "model_clean", "cylinders_num"],
+        ]
+        if observed.empty:
+            raise ValueError("Train không có số xi-lanh gốc để điền.")
+        self.model_modes_ = self._group_modes(
+            observed, ["manufacturer_clean", "model_clean"]
+        )
+        self.brand_modes_ = self._group_modes(observed, ["manufacturer_clean"])
+        self.global_mode_ = float(observed["cylinders_num"].mode().iloc[0])
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self, "global_mode_")
+        result = X.copy()
+        missing = result["cylinders_was_missing"]
+        rows = result.loc[missing]
+        keys = pd.MultiIndex.from_frame(rows[["manufacturer_clean", "model_clean"]])
+        estimates = self.model_modes_.reindex(keys).to_numpy()
+        brand = (
+            rows["manufacturer_clean"]
+            .map(self.brand_modes_)
+            .fillna(self.global_mode_)
+            .to_numpy()
+        )
+        result.loc[missing, "cylinders_num"] = np.where(
+            np.isnan(estimates), brand, estimates
+        )
+        return result
+
+
 class _KnownOrdinalEncoder(TransformerMixin, BaseEstimator):
     """Giữ hiệu ứng riêng cho unknown qua cờ, với mốc ordinal bằng 0."""
 
