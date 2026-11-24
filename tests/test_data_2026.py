@@ -110,6 +110,22 @@ def test_production_honors_manifest_and_groups(synthetic, tmp_path):
     frame["cylinders_was_missing"] = frame.index % 7 == 0
     frame.to_parquet(config.clean_parquet, index=False)
     args = {"mock": False, "fast_mode": True, "config": config, "split_manifest": path}
+    with pytest.raises(ValueError, match="manifest nhóm xe"):
+        AblationExperimentSuite.from_parquet(
+            config.clean_parquet, mock=False, fast_mode=True, config=config
+        )
+    ids_only = tmp_path / "ids_only.parquet"
+    manifest.drop(columns=GROUP_COLUMN).to_parquet(ids_only, index=False)
+    with pytest.raises(ValueError, match="vehicle_group_id"):
+        AblationExperimentSuite.from_parquet(
+            config.clean_parquet, **{**args, "split_manifest": ids_only}
+        )
+    frame.drop(columns="cylinders_was_missing").to_parquet(
+        config.clean_parquet, index=False
+    )
+    with pytest.raises(ValueError, match="cylinders_was_missing"):
+        AblationExperimentSuite.from_parquet(config.clean_parquet, **args)
+    frame.to_parquet(config.clean_parquet, index=False)
     suite = AblationExperimentSuite.from_parquet(config.clean_parquet, **args)
     assert set(suite._train_groups) == set(
         manifest.loc[manifest["split_set"].eq("train"), GROUP_COLUMN]

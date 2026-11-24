@@ -59,6 +59,8 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
 
     print("[3/6] Tính VIF và ranking trên train")
     train = suite.train_data
+    if not mock and "cylinders_was_missing" in train:
+        train = train.loc[~train["cylinders_was_missing"]]
     with threadpool_limits(limits=1, user_api="blas"):
         vif = compute_vif_table(train, ["year", "posting_year", *LINEARIZED_NUMERIC])
         ranking = rank_features_on_common_support(train, list(LINEARIZED_NUMERIC))

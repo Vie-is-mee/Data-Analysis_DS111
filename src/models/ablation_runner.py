@@ -171,7 +171,10 @@ class AblationExperimentSuite:
                 b"csv_sample": "mock-csv-sample",
             }.get(source, "mock-unspecified")
         else:
+            requires_vin_groups = bool(data["posting_year"].ge(2026).any())
             if split_manifest is None:
+                if requires_vin_groups:
+                    raise ValueError("Dữ liệu từ 2026 cần manifest nhóm xe đã khóa.")
                 data["split_set"] = assign_production_splits(
                     data["listing_id"], config.random_state
                 )
@@ -180,6 +183,14 @@ class AblationExperimentSuite:
                     pd.read_parquet(split_manifest, engine="pyarrow"),
                     data["listing_id"],
                 )
+                if requires_vin_groups and GROUP_COLUMN not in manifest:
+                    raise ValueError("Manifest từ 2026 phải có vehicle_group_id.")
+                if requires_vin_groups and (
+                    "cylinders_was_missing" not in data
+                    or not pd.api.types.is_bool_dtype(data["cylinders_was_missing"])
+                    or data["cylinders_was_missing"].isna().any()
+                ):
+                    raise ValueError("ABT từ 2026 cần cờ cylinders_was_missing hợp lệ.")
                 if (
                     data["split_set"].astype("string").tolist()
                     != manifest["split_set"].tolist()

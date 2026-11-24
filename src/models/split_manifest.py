@@ -1,6 +1,7 @@
 """Tạo và kiểm định bảng chia cố định do TV3 bàn giao."""
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -8,9 +9,9 @@ import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from configs.project_config import RANDOM_STATE
+from src.core.vin_reposts import GROUP_COLUMN, resolve_vin_reposts
 
 PARTITIONS = {"train", "val", "test"}
-GROUP_COLUMN = "vehicle_group_id"
 
 
 def _ids(listing_ids: pd.Series) -> pd.Index:
@@ -94,16 +95,39 @@ def validate_split_manifest(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--listings", type=Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--listings", type=Path, help="Danh sách ID hoặc nhóm đã khóa.")
+    inputs.add_argument("--vin-listings", type=Path, help="Metadata VIN nội bộ trước dedup.")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Manifest đã tồn tại. Chọn đường dẫn phiên bản mới.")
-    data = pd.read_parquet(args.listings, engine="pyarrow")
+    audit = {}
+    if args.vin_listings is not None:
+        data = pd.read_parquet(
+            args.vin_listings, engine="pyarrow", columns=["listing_id", "VIN", "posting_date"]
+        )
+        decisions = resolve_vin_reposts(data)
+        kept = decisions.loc[decisions["keep_for_abt"]]
+        audit = {
+            "rows_input": len(decisions),
+            "rows_kept": len(kept),
+            "rows_removed": len(decisions) - len(kept),
+            "rows_by_vin_status": decisions["vin_status"].value_counts().to_dict(),
+            "retained_multi_listing_groups": int(
+                kept.groupby(GROUP_COLUMN).size().gt(1).sum()
+            ),
+        }
+        data = kept
+    else:
+        data = pd.read_parquet(args.listings, engine="pyarrow")
+
     manifest = make_split_manifest(data)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    manifest.to_parquet(args.output, engine="pyarrow", index=False)
-    print(manifest["split_set"].value_counts().to_string())
+    with args.output.open("xb") as target:
+        manifest.to_parquet(target, engine="pyarrow", index=False)
+    audit["rows_by_split"] = manifest["split_set"].value_counts().to_dict()
+    print(json.dumps(audit, ensure_ascii=False))
 
 
 if __name__ == "__main__":
