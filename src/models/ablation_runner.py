@@ -11,7 +11,7 @@ from lightgbm import LGBMRegressor
 from sklearn.base import clone
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.tree import DecisionTreeRegressor
@@ -21,7 +21,6 @@ from configs.project_config import (
     CONFIG,
     HIGH_CARDINALITY_CATEGORICAL,
     LOW_CARDINALITY_CATEGORICAL,
-    RANDOM_STATE,
     REQUIRED_CLEAN_SCHEMA,
     ProjectConfig,
 )
@@ -31,7 +30,15 @@ from src.models.metrics import (
     inverse_log_transform,
 )
 from src.models.model_registry import ModelEntry, ModelRegistry
-from src.models.preprocessing_bridge import build_feature_preprocessor
+from src.models.preprocessing_bridge import (
+    CylinderModeImputer,
+    build_feature_preprocessor,
+)
+from src.models.split_manifest import (
+    GROUP_COLUMN,
+    assign_production_splits,
+    validate_split_manifest,
+)
 
 LINEARIZED_NUMERIC = ("car_age", "log_odometer", "miles_per_year", "cylinders_num")
 _RAW_FEATURES = ("year", "odometer")
@@ -45,25 +52,6 @@ _CV_FIELDS = (
     "mae",
     "mape_pct",
 )
-
-
-def assign_production_splits(
-    listing_ids: pd.Series, random_state: int = RANDOM_STATE
-) -> pd.Series:
-    """Chia 70/15/15 theo ID duy nhất, độc lập với nhãn và thứ tự dòng."""
-    ids = pd.Index(listing_ids, name="listing_id")
-    if ids.dtype != np.dtype("int64") or not ids.is_unique or len(ids) < 10:
-        raise ValueError("Split cần ít nhất 10 listing_id kiểu int64 và duy nhất.")
-    train, other = train_test_split(
-        ids.sort_values(), test_size=0.30, random_state=random_state
-    )
-    val, test = train_test_split(other, test_size=0.50, random_state=random_state + 1)
-    splits = pd.Series(index=ids, dtype="string")
-    for name, keys in (("train", train), ("val", val), ("test", test)):
-        splits.loc[keys] = name
-    return pd.Series(
-        splits.to_numpy(), index=listing_ids.index, dtype="string", name="split_set"
-    )
 
 
 def read_raw_exp0_features(
@@ -118,11 +106,14 @@ class AblationExperimentSuite:
         config: ProjectConfig = CONFIG,
         dataset_version: str = "mock-unspecified",
         raw_exp0_features: pd.DataFrame | None = None,
+        course_encoding: bool = False,
     ) -> None:
         self.config = config
         self.fast_mode = fast_mode
         self.dataset_version = dataset_version
         self.raw_exp0_features = raw_exp0_features
+        self._course_encoding = course_encoding
+        self._train_groups = None
         self.registry = ModelRegistry()
         self._final_model_id: str | None = None
         if (
@@ -141,29 +132,63 @@ class AblationExperimentSuite:
             len(self._splits[name]) < 2 for name in ("val", "test")
         ):
             raise ValueError("Thiếu số dòng theo split hoặc số fold CV.")
-        self._cv = KFold(
-            config.cv_folds, shuffle=True, random_state=config.random_state
-        )
+        if GROUP_COLUMN in self._data:
+            manifest = validate_split_manifest(self._data, self._data["listing_id"])
+            groups = manifest.loc[self._splits["train"].index, GROUP_COLUMN]
+            if groups.nunique() < config.cv_folds:
+                raise ValueError("Số nhóm xe trong train nhỏ hơn số fold.")
+            if not course_encoding:
+                raise ValueError("CV theo nhóm yêu cầu mã hóa không dùng nhãn giá.")
+            self._train_groups = groups
+            self._cv = GroupKFold(n_splits=config.cv_folds)
+        else:
+            self._cv = KFold(
+                config.cv_folds, shuffle=True, random_state=config.random_state
+            )
 
     @classmethod
     def from_parquet(
-        cls, path: Path, *, mock: bool, fast_mode: bool, config: ProjectConfig
+        cls,
+        path: Path,
+        *,
+        mock: bool,
+        fast_mode: bool,
+        config: ProjectConfig,
+        split_manifest: Path | None = None,
     ) -> "AblationExperimentSuite":
         """Đọc Parquet đã qua validator và áp dụng cách chia của TV3."""
-        data = pd.read_parquet(
-            path, engine="pyarrow", columns=list(REQUIRED_CLEAN_SCHEMA)
-        )
+        columns = list(REQUIRED_CLEAN_SCHEMA)
+        if "cylinders_was_missing" in pq.read_schema(path).names:
+            columns.append("cylinders_was_missing")
+        data = pd.read_parquet(path, engine="pyarrow", columns=columns)
         raw = None
         if mock:
+            if split_manifest is not None:
+                raise ValueError("Manifest cố định chỉ dùng với dữ liệu production.")
             source = (pq.read_metadata(path).metadata or {}).get(b"ds111.mock_source")
             version = {
                 b"synthetic": "mock-synthetic",
                 b"csv_sample": "mock-csv-sample",
             }.get(source, "mock-unspecified")
         else:
-            data["split_set"] = assign_production_splits(
-                data["listing_id"], config.random_state
-            )
+            if split_manifest is None:
+                data["split_set"] = assign_production_splits(
+                    data["listing_id"], config.random_state
+                )
+            else:
+                manifest = validate_split_manifest(
+                    pd.read_parquet(split_manifest, engine="pyarrow"),
+                    data["listing_id"],
+                )
+                if (
+                    data["split_set"].astype("string").tolist()
+                    != manifest["split_set"].tolist()
+                ):
+                    raise ValueError(
+                        "split_set trong ABT chưa khớp manifest đã khóa theo listing_id."
+                    )
+                if GROUP_COLUMN in manifest:
+                    data[GROUP_COLUMN] = manifest[GROUP_COLUMN].to_numpy()
             raw = read_raw_exp0_features(config.raw_csv, data["listing_id"])
             version = "v1.0"
         return cls(
@@ -172,13 +197,17 @@ class AblationExperimentSuite:
             config=config,
             dataset_version=version,
             raw_exp0_features=raw,
+            course_encoding=not mock,
         )
 
     @property
     def split_assignments(self) -> pd.DataFrame:
         """Danh sách chia tập theo ID để đối chiếu với dữ liệu TV1 và TV2."""
+        columns = ["listing_id", "split_set"]
+        if GROUP_COLUMN in self._data:
+            columns.append(GROUP_COLUMN)
         return (
-            self._data[["listing_id", "split_set"]]
+            self._data[columns]
             .reset_index(drop=True)
             .assign(dataset_version=self.dataset_version)
         )
@@ -207,7 +236,7 @@ class AblationExperimentSuite:
     def _cross_validate(self, prototype, X, target, price, log_target):
         usd_reports, log_reports = [], []
         oof = np.empty(len(X))
-        for inner_train, holdout in self._cv.split(X):
+        for inner_train, holdout in self._cv.split(X, groups=self._train_groups):
             X_fold = X.iloc[inner_train]
             y_fold = target[inner_train]
             estimator = clone(prototype).fit(X_fold, y_fold)
@@ -261,6 +290,11 @@ class AblationExperimentSuite:
         if model_id in self.registry.list_ids():
             raise ValueError(f"Mô hình đã được chạy: {model_id}")
         columns = [*numeric, *ordinal, *low, *high]
+        refit_cylinders = (
+            "cylinders_num" in numeric and "cylinders_was_missing" in self._data
+        )
+        if refit_cylinders:
+            columns = list(dict.fromkeys([*columns, *CylinderModeImputer.columns]))
         train, val = self._splits["train"], self._splits["val"]
         X = self._features("train", columns, stage)
         X_val = self._features("val", columns, stage)
@@ -275,7 +309,8 @@ class AblationExperimentSuite:
             random_state=self.config.random_state,
             cv_folds=self.config.cv_folds,
         ).set_output(transform="pandas")
-        steps = [("preprocess", preprocessor)]
+        steps = [("cylinders_mode", CylinderModeImputer())] if refit_cylinders else []
+        steps.append(("preprocess", preprocessor))
         if isinstance(estimator, LGBMRegressor):
             steps.append(("lightgbm_columns", FunctionTransformer(_lightgbm_frame)))
         steps.append(("regression", estimator))
@@ -364,10 +399,15 @@ class AblationExperimentSuite:
         )
         return primary, quadratic
 
+    def _nominal_columns(self):
+        if self._course_encoding:
+            return (*LOW_CARDINALITY_CATEGORICAL, *HIGH_CARDINALITY_CATEGORICAL), ()
+        return LOW_CARDINALITY_CATEGORICAL, HIGH_CARDINALITY_CATEGORICAL
+
     def run_exp3_encoding_comparison(self):
         ordinal = ("condition_clean",)
-        nominal = (*LOW_CARDINALITY_CATEGORICAL, "title_status_clean")
-        high = HIGH_CARDINALITY_CATEGORICAL
+        low, high = self._nominal_columns()
+        nominal = (*low, "title_status_clean")
         naive = self._fit(
             "Exp3A_Naive_Label",
             "OLS",
@@ -397,7 +437,7 @@ class AblationExperimentSuite:
             LINEARIZED_NUMERIC,
             strategy="principled_linear",
             ordinal=(*ordinal, "title_status_clean"),
-            low=LOW_CARDINALITY_CATEGORICAL,
+            low=low,
             high=high,
             variant="OLS_TitleOrdinal",
             notes="Chỉ thay One-Hot của title bằng thứ bậc giả thuyết để đối chứng.",
@@ -441,6 +481,7 @@ class AblationExperimentSuite:
             ),
         )
         entries = []
+        low, high = self._nominal_columns()
         for name, estimator in candidates:
             strategy = (
                 "principled_linear" if name in ("OLS", "Ridge") else "principled_tree"
@@ -453,8 +494,8 @@ class AblationExperimentSuite:
                     LINEARIZED_NUMERIC,
                     strategy=strategy,
                     ordinal=("condition_clean",),
-                    low=(*LOW_CARDINALITY_CATEGORICAL, "title_status_clean"),
-                    high=HIGH_CARDINALITY_CATEGORICAL,
+                    low=(*low, "title_status_clean"),
+                    high=high,
                     notes="Dùng cùng cột nguồn và các fold train của benchmark.",
                 )
             )

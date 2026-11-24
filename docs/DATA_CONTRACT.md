@@ -1,4 +1,4 @@
-# HỢP ĐỒNG DỮ LIỆU – DS111 (phiên bản 1.0)
+# HỢP ĐỒNG DỮ LIỆU – DS111 (phiên bản 1.1 · đề xuất cho nguồn 2026)
 
 **Trạng thái:** Giao ước ban đầu cho ba thành viên. Chỉ thay đổi bằng pull request được cả nhóm rà soát; thay đổi phá vỡ tương thích phải tăng phiên bản. File thật và file mồi phải có cùng cấu trúc cột.
 
@@ -13,7 +13,7 @@
 | `listing_id` | `int64` | Khóa duy nhất không rỗng; nếu không có ID gốc, dùng khóa ổn định và mô tả cách sinh |
 | `price` | `float64` | Giá USD, 500–150.000 (ngoại lệ phải được ghi nhận riêng) |
 | `log_price` | `float64` | `numpy.log(price)`, sai số tính toán cho phép 1e-8 |
-| `year` | `int32` | Năm sản xuất từ 1950–2022 theo phạm vi dữ liệu gốc |
+| `year` | `int32` | Năm model từ 1950–2027, tối đa posting_year + 1 |
 | `posting_year` | `int32` | Năm tin đăng được đăng; có chứng cứ từ `posting_date` |
 | `car_age` | `int32` | `max(posting_year - year, 0)`, không âm, không quá 100 |
 | `odometer` | `float64` | Số dặm không âm, không quá 500.000 (ghi rõ cách xử lý ngoại lệ) |
@@ -33,7 +33,9 @@
 | `year_era` | `string` | `Classic`, `Old`, `Mid`, `Modern` theo các mốc trước 2000, 2000–2010, 2011–2016, từ 2017 |
 | `split_set` | `string` | Chỉ nhận `train`, `val`, `test`; TV3 chịu trách nhiệm chia cố định, không để TV1 quyết định bằng thông tin nhãn đích |
 
-**Lưu ý tránh rò rỉ:** `split_set` trong bảng trên là cột bắt buộc để trao đổi phiên bản dữ liệu đã chia. TV3 phải công bố và lưu danh sách `listing_id` chia tập theo `RANDOM_STATE=42`, gán ngược lại vào file bàn giao (hoặc cung cấp tệp phân chia ổn định), tuyệt đối không dựa trên bảng chia tùy tiện của TV1. Với tập có một số trường không quan sát được trước khi định giá (ví dụ thông tin về giá), phải không đưa các trường đó vào đầu vào.
+**Chia tập.** TV3 khóa manifest theo `listing_id` và seed 42 sau khi chốt phiên bản ABT. Khi còn nhiều tin cùng xe, thêm `vehicle_group_id` trong manifest nội bộ và chia theo nhóm. Mỗi xe không nhận diện được dùng nhóm riêng theo ID. Mỗi nhóm chỉ thuộc một tập. Tỷ lệ 70/15/15 theo số nhóm là xấp xỉ theo số dòng. Cột `split_set` của ABT phải khớp manifest theo ID trước khi chạy production. Dùng cùng manifest cho mọi đối chứng. So sánh hai phiên bản trên tập đánh giá chung đã khóa.
+
+**Cột bổ sung.** Giữ nguyên 22 cột bắt buộc. Có thể bổ sung `condition_missing` và `cylinders_was_missing` dạng boolean không rỗng, ghi từ dữ liệu gốc trước khi điền. Giữ `seller_type` dạng string với nhãn `private`, `dealer`, `unknown` để phân tích độ phủ trước. Khi có cờ xi-lanh, TV3 khôi phục vị trí đã điền trong ABT và học mode theo hãng/dòng, hãng, toàn train trong từng fold. Cờ tình trạng và loại người bán phục vụ EDA ở phiên bản này. Giữ mã nhóm xe trong manifest nội bộ và tránh đưa VIN thô lên Git hoặc bảng dự báo.
 
 **Kiểm tra bàn giao:** đúng cột/kiểu, không ID trùng, số vô cực bằng 0, các trường số bắt buộc không rỗng, các trường chuỗi không rỗng sau khi chuẩn hóa, miền giá/tuổi/dặm đúng quy ước; tỷ lệ giữ dòng và nhật ký xử lý ngoại lệ phải ghi trong Workbook. TV1 chạy bộ kiểm thử ở Bước 2/4 trước khi bàn giao và ghi nhận rõ kết quả `PASS` hoặc `FAIL`. **Không được tuyên bố đã có bộ kiểm thử hoạt động ở Bước 1/4.**
 
@@ -51,7 +53,7 @@ P=P_0 e^{-k\,car\_age}(1+odometer)^{-\beta}
 
 - `condition_clean`: có thứ bậc rõ về chất lượng, mã hóa `salvage=0, fair=1, good=2, excellent=3, like new=4, new=5`; `unknown` phải được xử lý riêng.
 - `title_status_clean`: thứ tự thí nghiệm `parts only=0, missing=1, salvage=2, rebuilt=3, lien=4, clean=5` **chỉ là giả thuyết**. Trạng thái pháp lý không hình thành thứ tự chất lượng phổ quát. Bắt buộc so sánh với One-Hot; không kết luận Ordinal phù hợp trước khi có số liệu.
-- Cột ít nhãn `fuel`, `transmission`, `drive`, `type` dùng One-Hot (với `drop_first=True` cho OLS khi thích hợp); cột nhiều nhãn `manufacturer_clean`, `state` dùng Out-of-Fold Target Encoding **chỉ trên train, trong từng fold** và ánh xạ riêng val/test.
+- Baseline production dùng One-Hot cho `fuel`, `transmission`, `drive`, `type`, `manufacturer_clean` và `state` trên train của từng fold. OLS dùng `drop_first=True`. Nếu còn nhiều bản ghi một xe, dùng GroupKFold và encoder không dùng giá. Đối chứng OOF Target Encoding của mock vẫn giữ cho phần mở rộng.
 - Lưu `pandas.Series` biến đổi trong vùng nhớ công thức và siêu dữ liệu trong cấu trúc riêng. `ModelRegistry` quản lý mô hình, thông số, tập chia, kết quả và phiên bản dữ liệu.
 
 ## 3. Đầu ra TV3 cho TV2

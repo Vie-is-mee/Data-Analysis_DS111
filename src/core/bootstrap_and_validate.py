@@ -827,6 +827,7 @@ def validate_handoff_dataset(
         y, py, age = data["year"], data["posting_year"], data["car_age"]
         valid = bool(
             y.between(CONFIG.min_year, CONFIG.max_year).all()
+            and y.le(py.astype("int64") + 1).all()
             and age.between(0, CONFIG.max_car_age).all()
             and (np.maximum(py.astype("int64") - y, 0) == age).all()
         )
@@ -834,7 +835,7 @@ def validate_handoff_dataset(
             "Năm sản xuất và tuổi xe",
             valid,
             f"year: [{y.min()}, {y.max()}], tuổi: [{age.min()}, {age.max()}]",
-            "car_age phải bằng max(posting_year-year, 0), year trong phạm vi cấu hình.",
+            "year trong phạm vi cấu hình và tối đa posting_year + 1. car_age bằng max(posting_year-year, 0).",
         )
     else:
         report.add(
@@ -952,6 +953,23 @@ def validate_handoff_dataset(
             not invalid_titles,
             "Nhãn hợp lệ" if not invalid_titles else str(invalid_titles),
             "Chuẩn hóa trạng thái pháp lý theo hợp đồng.",
+        )
+    for flag in ("condition_missing", "cylinders_was_missing"):
+        if has(flag):
+            valid_flag = (
+                pd.api.types.is_bool_dtype(data[flag]) and data[flag].notna().all()
+            )
+            report.add(
+                f"Cờ {flag}", valid_flag, "Cờ tùy chọn phải là boolean không rỗng."
+            )
+    if has("seller_type"):
+        seller = data["seller_type"]
+        valid_seller = (
+            isinstance(seller.dtype, pd.StringDtype)
+            and seller.isin({"private", "dealer", "unknown"}).all()
+        )
+        report.add(
+            "seller_type", valid_seller, "Cột tùy chọn dùng private/dealer/unknown."
         )
     if has("condition_ord"):
         ord_values = set(data["condition_ord"].dropna().tolist())

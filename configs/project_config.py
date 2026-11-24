@@ -6,10 +6,10 @@ Không nhập đường dẫn tuyệt đối theo máy cá nhân. Các phép bi�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Mapping
-
+from typing import Final
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 RANDOM_STATE: Final[int] = 42
@@ -64,11 +64,12 @@ TITLE_STATUS_ORDINAL_EXPERIMENTAL: Final[Mapping[str, int]] = {
 }
 
 LOW_CARDINALITY_CATEGORICAL: Final[tuple[str, ...]] = (
-    "fuel", "transmission", "drive", "type"
+    "fuel",
+    "transmission",
+    "drive",
+    "type",
 )
-HIGH_CARDINALITY_CATEGORICAL: Final[tuple[str, ...]] = (
-    "manufacturer_clean", "state"
-)
+HIGH_CARDINALITY_CATEGORICAL: Final[tuple[str, ...]] = ("manufacturer_clean", "state")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +87,7 @@ class ProjectConfig:
     min_price_usd: float = 500.0
     max_price_usd: float = 150_000.0
     min_year: int = 1950
-    max_year: int = 2022
+    max_year: int = 2027
     max_odometer_miles: float = 500_000.0
     max_car_age: int = 100
     mock_sample_rows: int = 5_000

@@ -38,7 +38,16 @@ Mock lấy mẫu từ CSV nếu có hoặc tạo dữ liệu giả lập. Cả h
 .\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode production
 ```
 
-Production chia 70/15/15 trên danh sách `listing_id` đã sắp xếp với seed 42. Khi bộ ID đổi, tạo phiên bản bàn giao mới và giữ manifest của phiên bản trước. TV3 ghi manifest riêng, giữ file Parquet TV1 làm nguồn đối chiếu. Exp0 ghép `year` và `odometer` từ `data/raw/vehicles.csv` nếu đủ khóa duy nhất. Các thí nghiệm dùng cùng mẫu và giá tham chiếu để so sánh. Khi thiếu CSV hoặc khóa không ghép được, Exp0 ghi rõ dùng proxy từ mẫu đã lọc.
+Với nguồn 2026, dùng Parquet đầu vào của TV1 và quy tắc trong hợp đồng. Sau khi xử lý tin đăng lại, tạo manifest một lần rồi gán `split_set` vào ABT theo `listing_id`. Tệp danh sách để tạo manifest có `listing_id` và, nếu còn nhiều tin một xe, `vehicle_group_id` độc lập với giá. Giữ tệp nhóm xe cục bộ. Manifest bảo toàn nhóm cả khi chia tập và khi chạy CV.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m src.models.split_manifest --listings data/processed/listing_groups.parquet --output data/processed/split_manifest_v1.parquet
+.\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode production --split-manifest data/processed/split_manifest_v1.parquet
+```
+
+Nếu mỗi xe đã được thu về một tin, danh sách nhóm chỉ cần `listing_id`. Đường chạy không truyền manifest vẫn chia theo ID để tương thích dữ liệu cũ. Khi ABT thay đổi, tạo phiên bản mới, giữ manifest cũ và dùng tập đánh giá chung để so sánh.
+
+Exp0 ghép `year` và `odometer` từ `data/raw/vehicles.csv` nếu đủ khóa duy nhất. Các thí nghiệm dùng cùng mẫu và giá tham chiếu. Khi thiếu CSV hoặc khóa không ghép được, Exp0 ghi rõ dùng proxy từ mẫu đã lọc.
 
 ## Đọc kết quả
 
