@@ -1,68 +1,52 @@
 # DS111 – Phân tích dữ liệu và định giá xe cũ Craigslist
 
-Dự án nhóm 3 người, Python 3.11 chạy trên CPU, sử dụng bộ dữ liệu Used Cars – Craigslist (khoảng 426.000 tin rao). Nghiên cứu ảnh hưởng của tuổi xe, số dặm, hãng xe, tình trạng pháp lý và các đặc trưng khác đến giá USD; so sánh mô hình tuyến tính (OLS, Ridge) với Decision Tree, Random Forest và LightGBM bằng thực nghiệm loại bỏ/thêm từng kỹ thuật (ablation).
-
-> **Tình trạng hiện tại – BƯỚC 1/4:** Mới hoàn tất các tài liệu và tệp cấu hình nền tảng: `.gitignore`, `requirements.txt`, `configs/project_config.py`, `docs/DATA_CONTRACT.md`, `README.md`. Bộ sinh dữ liệu mồi, kiểm tra bàn giao, cấu trúc công thức, huấn luyện, kiểm thử và bảng điều khiển **chưa được triển khai**; không chạy lệnh gọi những mô-đun chưa tồn tại.
+Đồ án nhóm ba người, dùng Python 3.11 trên CPU. Pipeline TV3 so sánh OLS, Ridge, Decision Tree, Random Forest và LightGBM để dự báo giá xe đã qua sử dụng.
 
 ## Vai trò và vùng sở hữu
 
 | Thành viên | Nhánh | Vùng thực hiện |
 |---|---|---|
-| TV1 – xử lý dữ liệu & Workbook | `feature/m1-data-workbook` | `src/data/`, `workbook/` |
-| TV2 – khám phá dữ liệu & Power BI | `feature/m2-eda-dashboard` | `src/analysis/`, `dashboard/` |
-| TV3 – mô hình, thực nghiệm & điều phối | `feature/m3-models` | `src/models/`, `scripts/`, `outputs/` |
+| TV1 – dữ liệu và Workbook | `feature/m1-data-workbook` | [src/data](src/data/M1_WORKSPACE.md), `workbook/` (sheet 00–07) |
+| TV2 – EDA và Power BI | `feature/m2-eda-dashboard` | [src/analysis](src/analysis/M2_WORKSPACE.md), `dashboard/` |
+| TV3 – mô hình và điều phối | `feature/m3-models` | `src/models/`, `scripts/`, `outputs/` (tệp sinh cục bộ) |
 
-`src/core/`, `configs/`, `docs/`, `README.md`, `requirements.txt` là phần dùng chung, TV3 điều phối thay đổi. Mỗi người làm trên nhánh riêng, gửi yêu cầu gộp thay đổi (Pull Request/PR), rà soát và kiểm thử trước khi nhập vào `main`.
+Phần dùng chung gồm `src/core/`, `configs/`, `requirements.txt` và [Hợp đồng dữ liệu](docs/DATA_CONTRACT.md). Mỗi người phát triển trên nhánh riêng và mở PR vào `main`.
 
-## Cây thư mục dự kiến (không phải tất cả đã có)
-
-```text
-.
-├── README.md
-├── .gitignore
-├── requirements.txt
-├── configs/
-│   ├── __init__.py
-│   └── project_config.py
-├── docs/DATA_CONTRACT.md
-├── data/
-│   ├── raw/vehicles.csv             # tự tải; không đưa vào Git
-│   ├── mock/mock_clean_sample.parquet
-│   └── processed/used_cars_clean_v1.parquet
-├── workbook/Project_Workbook.xlsx
-├── src/
-│   ├── core/                       # formula store, sinh mẫu, kiểm định
-│   ├── data/                       # TV1
-│   ├── analysis/                   # TV2
-│   └── models/                     # TV3
-├── scripts/run_m3_baseline.py
-├── outputs/
-│   ├── models/
-│   └── predictions/predictions_test.parquet
-└── tests/test_baseline_smoke.py
-```
-
-## Năm lệnh khởi động trên Windows PowerShell
-
-Chạy trong thư mục gốc của dự án; cần cài Git và Python 3.11 trước. Đây là **5 lệnh hoạt động ở Bước 1**, chưa phải 5 lệnh chạy toàn bộ huấn luyện:
+## Chạy thử trên Windows PowerShell
 
 ```powershell
 git clone https://github.com/Vie-is-mee/Data-Analysis_DS111.git
 cd Data-Analysis_DS111
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -c "from configs.project_config import CONFIG; print(CONFIG.root); print(CONFIG.clean_parquet)"
+.\.venv\Scripts\python.exe -X utf8 -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q
 ```
 
-TV1 và TV2 thực hiện cùng năm lệnh trên, rồi chuyển sang nhánh riêng (chỉ sau khi nhánh tồn tại): `git switch feature/m1-data-workbook` hoặc `git switch feature/m2-eda-dashboard`. TV3 chọn `feature/m3-models`. Nếu nhánh chưa tồn tại, người phụ trách tạo bằng `git switch -c <tên-nhánh>` và `git push -u origin <tên-nhánh>`.
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m src.core.bootstrap_and_validate bootstrap --samples 5000
+.\.venv\Scripts\python.exe -X utf8 -m src.core.bootstrap_and_validate validate --parquet data/mock/mock_clean_sample.parquet --formula-store data/mock/mock_formula_store.joblib
+.\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode mock --fast
+.\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode mock
+```
 
-## Trình tự chia việc và bàn giao
+Mock lấy mẫu từ CSV nếu có hoặc tạo dữ liệu giả lập. Cả hai chỉ dùng thử kỹ thuật. Chỉ nạp FormulaStore do nhóm tự tạo và tin cậy. `--fast` giảm số cây của Random Forest và LightGBM, giữ nguyên số dòng và fold. Bỏ cờ này khi nghiệm thu cấu hình đầy đủ.
 
-1. **Bước 1 – Nền tảng:** Khóa cấu hình, hợp đồng dữ liệu, quy tắc làm việc (đã soạn).
-2. **Bước 2 – Hạ tầng chung:** TV3 tạo `FormulaStore` tách giá trị `pandas.Series` và thông tin công thức, sinh tập mồi 5.000 dòng từ nguồn đã tải, xây `validate_handoff.py`; TV1 và TV2 có thể phát triển trên tập mồi.
-3. **Bước 3 – Hoàn thiện ba nhánh:** TV1 tạo tập sạch `used_cars_clean_v1.parquet` và Workbook; TV2 khám phá phân phối/tương quan từng `Series` và Dashboard; TV3 xây `ModelRegistry`, phép đo, mã hóa tránh rò rỉ, OLS/Ridge/Tree/Forest/LightGBM, đối chứng Exp 0–4.
-4. **Bước 4 – Kiểm thử & tích hợp:** Chạy kiểm tra tự động, nghiệm thu bản sạch, ghép dữ liệu thật, tính phần dư trên test, xuất `predictions_test.parquet`, cập nhật Sheet 08 và chuẩn bị báo cáo.
+## Chạy trên dữ liệu TV1 bàn giao
 
-**Quy định đo lường:** `R² = 1 - SS_res/SS_tot`, có đối chứng dự đoán trung bình tập huấn luyện. Nếu học `log(price)`, dự báo USD phải áp dụng Duan Smearing tính từ phần dư train; đối chiếu RMSE, MAE, MAPE trên USD. Xếp hạng ảnh hưởng các yếu tố phải dùng cùng tập mẫu, loại bỏ đa cộng tuyến bằng VIF khi phù hợp và chuẩn hóa cùng thang đo. Không dùng dữ liệu test để học cách mã hóa, lọc đặc trưng hay chỉnh mô hình.
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m src.core.bootstrap_and_validate validate --parquet data/processed/used_cars_clean_v1.parquet --formula-store data/processed/formula_store_v1.joblib
+.\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode production
+```
 
-Chi tiết cột dữ liệu, quy tắc phân chia, phép biến đổi, đầu ra và phương án bảo vệ nhánh nằm ở [`docs/DATA_CONTRACT.md`](docs/DATA_CONTRACT.md). Số liệu và kết quả trong báo cáo phải là số đo chạy thực tế, không dùng con số minh họa làm kết luận.
+Production chia 70/15/15 trên danh sách `listing_id` đã sắp xếp với seed 42. Khi bộ ID đổi, tạo phiên bản bàn giao mới và giữ manifest của phiên bản trước. TV3 ghi manifest riêng, giữ file Parquet TV1 làm nguồn đối chiếu. Exp0 ghép `year` và `odometer` từ `data/raw/vehicles.csv` nếu đủ khóa duy nhất. Các thí nghiệm dùng cùng mẫu và giá tham chiếu để so sánh. Khi thiếu CSV hoặc khóa không ghép được, Exp0 ghi rõ dùng proxy từ mẫu đã lọc.
+
+## Đọc kết quả
+
+- `outputs/models/ablation_summary.csv` lưu đối chứng Exp0–Exp4, gồm tuổi xe bình phương và One-Hot so với Ordinal giả thuyết cho `title_status_clean`.
+- `outputs/models/split_assignments.parquet` lưu `listing_id`, nhãn chia tập và phiên bản dữ liệu.
+- `outputs/predictions/predictions_test.parquet` chứa dự báo test theo hợp đồng, kèm hãng, tuổi xe, đời xe và sai số phần trăm cho TV2.
+- `workbook/Project_Workbook_M3_Tracking.xlsx` có ba sheet TV3. Workbook gốc của TV1 được quản lý riêng.
+
+Mỗi lần chạy cập nhật các đường dẫn đầu ra trên. Giữ bản production riêng khi chạy lại mock. Git bỏ qua dữ liệu, Workbook và kết quả sinh tự động.
+
+Imputer, scaler và encoder chỉ fit trên phần train của từng fold. Target Encoding dùng ánh xạ OOF cho hàng train và ánh xạ train đầy đủ cho validation/test. R² dùng trung bình của tập đang đánh giá và Adjusted R² để trống khi thiếu bậc tự do. Mô hình log nghịch đảo về USD với Duan Smearing. Trong CV hệ số học từ phần train của fold, còn hệ số cuối học từ dự báo OOF trên toàn train. Mô hình được chọn theo RMSE USD trung bình của CV, dùng validation nếu hòa. Chỉ ứng viên đã chốt được chấm test.
