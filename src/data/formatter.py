@@ -153,29 +153,6 @@ def keep_us_only(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     return out
 
 
-def dedup_by_vin(df: pd.DataFrame, log: TransformLog, enabled: bool = False) -> pd.DataFrame:
-    """Tin đăng lại cùng một xe (cùng VIN 17 ký tự) → giữ tin đăng mới nhất.
-
-    Bài 2/3: loại bỏ trùng lặp. Lý do thêm: cùng một xe nằm ở cả train và test
-    gây rò rỉ. Dòng không có VIN hợp lệ không bị đụng tới (không đủ căn cứ).
-    TODO: chờ TV3 đồng ý rồi bật bằng --dedup-vin.
-    """
-    if not enabled or "VIN" not in df.columns:
-        log.record("03_format", SHEET, "Bỏ trùng VIN (chưa bật)", "Chờ TV3 xác nhận", df, df)
-        return df
-    vin = df["VIN"].astype("string").str.strip().str.upper()
-    posted = pd.to_datetime(df["posting_date"], errors="coerce", utc=True)
-    valid = vin.str.fullmatch(r"[A-HJ-NPR-Z0-9]{17}").fillna(False)
-    # Sắp xếp ổn định: ngày đăng mới nhất trước, hòa thì id lớn hơn trước → chạy lại ra cùng kết quả.
-    order = pd.DataFrame({"posted": posted, "id": df["id"]})[valid]
-    newest_first = order.sort_values(["posted", "id"], ascending=False, kind="mergesort").index
-    dup = vin.loc[newest_first].duplicated(keep="first")
-    out = df.drop(index=dup[dup].index)
-    log.record("03_format", SHEET, "Bỏ tin trùng VIN, giữ tin đăng mới nhất",
-               "Cùng một xe đăng nhiều lần; tránh lặp mẫu giữa train/test", df, out)
-    return out
-
-
 def standardize_cylinders(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     """Chuẩn cylinders_num; hợp đồng yêu cầu số hữu hạn, không rỗng.
 
@@ -208,15 +185,15 @@ def drop_duplicate_ids(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     return out
 
 
-def run(df: pd.DataFrame, log: TransformLog, dedup_vin: bool = False) -> pd.DataFrame:
+def run(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     df = drop_duplicate_ids(df, log)
     df = keep_us_only(df, log)
     df = standardize_labels(df, log)
     df = parse_dates(df, log)
     df = filter_ranges(df, log)
-    # Bỏ trùng SAU khi lọc miền: nếu tin mới nhất có giá 0 ("gọi để biết giá")
-    # thì vẫn giữ được tin cũ hợp lệ của cùng xe, thay vì mất cả chiếc xe.
-    df = dedup_by_vin(df, log, enabled=dedup_vin)
-    # Lọc giá tầng 2 (IQR) nay chỉ gắn cờ, chạy trong pipeline sau khi có split_set.
+    # Gộp tin đăng lại theo VIN: KHÔNG làm ở đây. Theo DATA_CONTRACT 1.1, TV3 quyết định
+    # bằng src.core.vin_reposts (chữ số kiểm tra 49 CFR 565.15) từ danh sách VIN mà
+    # pipeline xuất SAU bước này; pipeline lọc lại theo manifest (xem pipeline_m1).
+    # Lọc giá tầng 2 (IQR) chỉ gắn cờ, chạy trong pipeline sau khi có split_set.
     df = standardize_cylinders(df, log)
     return df.reset_index(drop=True)

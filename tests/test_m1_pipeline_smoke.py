@@ -2,9 +2,12 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.core.bootstrap_and_validate import validate_handoff_dataset
+from src.core.vin_reposts import resolve_vin_reposts
 from src.data.pipeline_m1 import build_clean_dataset, main
+from src.models.split_manifest import make_split_manifest
 from src.data.raw_profile import PIPELINE_COLUMNS, load_raw, profile_raw
 
 
@@ -73,6 +76,18 @@ def test_m1_cleaning_rules(tmp_path):
     assert len(result.log) > 0 and result.log.to_dataframe()["reason"].str.len().gt(0).all()
 
 
+def _manifest_from(result) -> pd.DataFrame:
+    """Đóng vai TV3: quyết định gộp tin từ danh sách VIN rồi khóa manifest."""
+    decisions = resolve_vin_reposts(result.vin_candidates)
+    return make_split_manifest(decisions[decisions["keep_for_abt"]])
+
+
+def _two_pass(raw_csv):
+    first = build_clean_dataset(load_raw(raw_csv))
+    manifest = _manifest_from(first)
+    return first, manifest, build_clean_dataset(load_raw(raw_csv), split_manifest=manifest)
+
+
 def test_m1_new_cleaning_rules(tmp_path):
     raw = _fake_raw()
     ids = raw["id"]
@@ -85,7 +100,7 @@ def test_m1_new_cleaning_rules(tmp_path):
     raw.loc[111, "odometer_rolled_over"] = 1
     raw.loc[112, "address_country"] = "CA"
     # Cùng VIN, tin 121 mới hơn → giữ 121, bỏ 120.
-    vin = "1FM5K8GCXNGA77516"
+    vin = "1M8GDM9AXKP042788"  # VIN mẫu công khai (qua chữ số kiểm tra), không có trong dữ liệu
     raw.loc[[120, 121], "VIN"] = vin
     raw.loc[120, "posting_date"] = "2021-05-01T10:00:00-0500"
     raw.loc[121, "posting_date"] = "2021-05-09T10:00:00-0500"
@@ -94,29 +109,65 @@ def test_m1_new_cleaning_rules(tmp_path):
     raw_csv = tmp_path / "vehicles.csv"
     raw.to_csv(raw_csv, index=False)
 
-    data = build_clean_dataset(load_raw(raw_csv), dedup_vin=True).data.set_index("listing_id")
+    first, _, second = _two_pass(raw_csv)
+    data = second.data.set_index("listing_id")
     assert data.loc[ids[100], "manufacturer_clean"] == "maserati"
     assert data.loc[ids[101], "manufacturer_clean"] == "land rover"
     assert data.loc[ids[102], "manufacturer_clean"] == "unknown"
     assert not {ids[110], ids[111], ids[112], ids[120]} & set(data.index)
     assert ids[121] in data.index
 
-    # Không bật cờ → giữ cả hai tin trùng VIN.
-    kept = build_clean_dataset(load_raw(raw_csv)).data["listing_id"]
-    assert {ids[120], ids[121]} <= set(kept)
+    # Lượt 1 (chưa có manifest) → giữ cả hai tin trùng VIN, xuất VIN cho TV3.
+    assert {ids[120], ids[121]} <= set(first.data["listing_id"])
+    assert list(first.vin_candidates.columns) == ["listing_id", "VIN", "posting_date"]
+    assert first.vin_report is None
 
 
 def test_dedup_vin_keeps_valid_older_listing_when_newest_has_no_price(tmp_path):
     raw = _fake_raw()
     ids = raw["id"]
-    raw.loc[[200, 201], "VIN"] = "2B3LJ74W39H549395"
+    raw.loc[[200, 201], "VIN"] = "1HGCM82633A004352"  # VIN mẫu công khai
     raw.loc[[200, 201], ["year", "odometer"]] = [2015, 50_000]
     raw.loc[200, ["posting_date", "price"]] = ["2021-05-01T10:00:00-0500", 15_000]
     raw.loc[201, ["posting_date", "price"]] = ["2021-05-09T10:00:00-0500", 0]  # "gọi để biết giá"
     raw_csv = tmp_path / "vehicles.csv"
     raw.to_csv(raw_csv, index=False)
-    kept = set(build_clean_dataset(load_raw(raw_csv), dedup_vin=True).data["listing_id"])
+    # Danh sách VIN xuất SAU lọc giá → tin giá 0 không vào manifest, tin cũ hợp lệ được giữ.
+    kept = set(_two_pass(raw_csv)[2].data["listing_id"])
     assert ids[200] in kept and ids[201] not in kept
+
+
+def test_manifest_sets_split_and_vin_report(tmp_path):
+    raw = _fake_raw()
+    raw.loc[[300, 301, 302], "VIN"] = "1HGCM82633A004352"
+    raw.loc[300, "posting_date"] = "2021-05-01T10:00:00-0500"
+    raw.loc[301, "posting_date"] = "2021-05-02T10:00:00-0500"
+    raw.loc[302, "posting_date"] = "2021-05-03T10:00:00-0500"
+    raw.loc[[300, 301, 302], "seller_type"] = "dealer"
+    for r in (300, 301, 302):
+        raw.loc[r, ["price", "year", "odometer"]] = [15_000, 2015, 50_000]
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    first, manifest, second = _two_pass(raw_csv)
+
+    data = second.data.set_index("listing_id")
+    assert set(data.index) == set(manifest["listing_id"])
+    assert len(first.data) - len(second.data) == 2
+    expected = manifest.set_index("listing_id").loc[data.index, "split_set"]
+    assert (data["split_set"] == expected).all()
+
+    report = second.vin_report.set_index("seller_type")
+    assert report.loc["dealer", "Bị gộp"] == 2 and report.loc["Tổng", "Bị gộp"] == 2
+    assert report.loc["Tổng", "Số dòng sau"] == len(second.data)
+
+
+def test_stale_manifest_is_rejected(tmp_path):
+    raw_csv = tmp_path / "vehicles.csv"
+    _fake_raw().to_csv(raw_csv, index=False)
+    manifest = _manifest_from(build_clean_dataset(load_raw(raw_csv)))
+    stale = pd.concat([manifest, manifest.tail(1).assign(listing_id=1)], ignore_index=True)
+    with pytest.raises(ValueError, match="manifest cũ"):
+        build_clean_dataset(load_raw(raw_csv), split_manifest=stale)
 
 
 def test_price_iqr_flags_outliers_without_dropping_rows(tmp_path):
@@ -200,11 +251,11 @@ def test_raw_profile_has_decision_columns(tmp_path):
     raw_csv = tmp_path / "vehicles.csv"
     _fake_raw(50).to_csv(raw_csv, index=False)
     raw = _fake_raw(50)
-    raw["description"] = "CALL OR TEXT: (669) 248-7579"
+    raw["description"] = "CALL OR TEXT: (555) 555-0142"  # số hư cấu (dải 555-01xx)
     raw.to_csv(raw_csv, index=False)
     profile = profile_raw(load_raw(raw_csv, usecols=None)).set_index("column")
     assert {"keep_drop", "reason", "missing_pct"} <= set(profile.columns)
     assert set(PIPELINE_COLUMNS) <= set(profile.index)
     # Sheet 01 lên Git → không được lộ SĐT/URL/VIN trong cột ví dụ.
-    assert "248-7579" not in profile.loc["description", "example_values"]
+    assert "555-0142" not in profile.loc["description", "example_values"]
     assert "example.invalid" not in profile.loc["url", "example_values"]

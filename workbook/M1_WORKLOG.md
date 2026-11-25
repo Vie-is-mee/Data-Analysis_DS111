@@ -255,3 +255,57 @@ Xe đời 2023–2027: 9.587 / 8.388 / 6.807 / 3.985 / 329. Không dòng nào vi
    vụ, trước gộp tin) — chỉ lưu nội bộ, không lên Git. M3 tạo manifest; M1 lọc ABT theo ID được giữ
    và lấy `split_set` từ manifest (thay `assign_production_splits` + bỏ `dedup_by_vin` của M1).
 3. Báo số dòng + giá trung vị trước/sau gộp VIN **theo seller_type** (yêu cầu M1-11 / hợp đồng).
+
+## 24/11/2026 · Ngày 2 (khuya) — Gộp nhánh M3, năm 2027, luồng manifest VIN
+
+- Gộp `origin/feature/m3-data-2026` vào nhánh M1 (commit `d31f647`, không xung đột).
+  Có `max_year = 2027`, validator 1.1, `vin_reposts.py`, `split_manifest.py`.
+  PR #1 đã được gộp vào `feature/m3-models` (`228c7b8`).
+- **Bỏ cách gộp VIN riêng của M1** (`dedup_by_vin`, `--dedup-vin`): theo hợp đồng 1.1, M3 quyết định
+  bằng chữ số kiểm tra VIN. Pipeline chạy 2 lượt:
+  1. `pipeline_m1` → ABT phát triển + `vin_candidates_local.parquet` (listing_id, VIN, posting_date
+     sau lọc nghiệp vụ, trước gộp; trong `data/processed/` đã gitignore).
+  2. M3: `split_manifest --vin-listings ...` → manifest.
+  3. `pipeline_m1 --split-manifest <file>` → chỉ giữ ID trong manifest, `split_set` lấy từ manifest;
+     manifest cũ (có ID không còn trong ABT) bị từ chối.
+- Sheet 03 có bảng trước/sau gộp VIN theo `seller_type` (`m1_vin_report.csv`).
+
+### Số liệu thật (manifest chạy thử bằng code của M3, chưa phải manifest chính thức)
+| | Trước gộp | Sau gộp |
+|---|---|---|
+| Số dòng (2027) | 272.563 | **194.083** (65,7% dữ liệu gốc) |
+| Giá trung vị | 12.995 | 10.999 |
+
+| seller_type | Trước | Sau | Bị gộp | % | Trung vị trước → sau |
+|---|---|---|---|---|---|
+| dealer | 201.081 | 124.027 | 77.054 | **38,3%** | 14.999 → 13.500 |
+| private | 71.482 | 70.056 | 1.426 | 2,0% | 7.600 → 7.500 |
+
+Trạng thái VIN: qua chữ số kiểm tra 160.938; thiếu 109.455; sai dạng 1.594; không qua kiểm tra 571;
+giữ chỗ 5. Split theo nhóm: 135.842 / 29.136 / 29.105. Validator 1.1: 36/36 PASS.
+
+**Ý nghĩa cho báo cáo:** đại lý đăng lại cùng một xe rất nhiều lần (38% tin đại lý là tin lặp). Không gộp
+thì cùng một xe nằm ở cả train và test → R² ảo. Sau gộp còn 194.083 dòng: dưới mốc 200k M1 tự đặt
+nhưng trên ngưỡng R1 của nhóm (100k). Giá trung vị giảm vì tin lặp chủ yếu là xe đại lý giá cao.
+
+### Lỗi phát hiện khi rà soát
+- **2 VIN thật từ dữ liệu nằm trong `tests/test_m1_pipeline_smoke.py`** (từ commit `1f2c9f7`, đã lên
+  GitHub qua PR #1). Đã thay bằng VIN mẫu công khai (qua chữ số kiểm tra, kiểm tra không có trong
+  dữ liệu). Lịch sử Git cũ vẫn còn → báo M3 quyết định có cần viết lại lịch sử không.
+  Bài học: quét cả chuỗi 17 ký tự giống VIN khi rà diff, không chỉ SĐT/URL.
+
+Kiểm thử: 32/32 (cả test M3), thêm test manifest đặt split_set, báo cáo VIN theo người bán,
+từ chối manifest cũ.
+
+## 25/11/2026 — Quyết định của M3 về dữ liệu thật trong lịch sử Git
+
+- M3: M1 đẩy bản đã thay dữ liệu mẫu lên nhánh M1; M3 kiểm tra để bản mới nhất của hai nhánh
+  (`feature/m3-models`, `feature/m1-data-workbook`) sạch, chạy test rồi **squash vào `main`**.
+  Dữ liệu thật trong lịch sử PR #1 được ghi nhận riêng, thống nhất sau nếu cần xóa.
+  (Lúc kiểm tra 25/11: `main` và `feature/m3-data-2026` sạch; M3 đã gộp PR #3 vào `main`.)
+- Quét lại TOÀN BỘ file theo dõi bởi Git (không chỉ diff) với danh sách VIN của dữ liệu gốc →
+  phát hiện thêm **số điện thoại thật** (xuất hiện trong 284 tin, có lẽ của một đại lý) trong
+  test ẩn dữ liệu cá nhân của `tests/test_m1_pipeline_smoke.py` (cũng từ commit `1f2c9f7`).
+  Đã thay bằng số hư cấu dải 555-01xx. Chuỗi `12345678901234567` trong code M3 là VIN giữ chỗ,
+  không phải dữ liệu cá nhân.
+- Ghi nhận cho M3: commit `1f2c9f7` chứa 2 VIN thật + 1 số điện thoại thật.

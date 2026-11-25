@@ -36,7 +36,7 @@ from configs.project_config import (
 )
 from src.core.formula_store import FormulaStore
 from src.data import formatter, selector
-from src.data.pipeline_m1 import DEFAULT_LOG, DEFAULT_STORE
+from src.data.pipeline_m1 import DEFAULT_LOG, DEFAULT_STORE, DEFAULT_VIN_REPORT
 
 M1_SHEETS = (
     "00_Log", "01_Raw_Profile", "02_Missing", "03_Format",
@@ -237,7 +237,8 @@ def _as_text(s: pd.Series) -> pd.Series:
 
 # ── Ghi file ─────────────────────────────────────────────────────────────────
 def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
-                    profile: pd.DataFrame | None, raw: pd.DataFrame | None, path: Path) -> Path:
+                    profile: pd.DataFrame | None, raw: pd.DataFrame | None, path: Path,
+                    vin_report: pd.DataFrame | None = None) -> Path:
     path = Path(path)
     if path.exists():
         with warnings.catch_warnings():
@@ -272,7 +273,12 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
 
     ws = book["03_Format"]
     r = _write_title(ws, 1, "Chuẩn hóa, lọc miền, lọc ngoại lệ (số dòng trước/sau)")
-    _write_table(ws, log[log["sheet"] == "03_Format"], r)
+    r = _write_table(ws, log[log["sheet"] == "03_Format"], r)
+    r = _write_title(ws, r, "Gộp tin đăng lại theo VIN — trước/sau theo loại người bán (DATA_CONTRACT 1.1)")
+    if vin_report is None:
+        ws.cell(r, 1, "Chưa có manifest TV3: ABT này chưa gộp tin đăng lại (bản phát triển).")
+    else:
+        _write_table(ws, vin_report, r)
 
     ws = book["04_Features"]
     r = _write_title(ws, 1, "Công thức đặc trưng (FormulaStore) — thống kê trước/sau")
@@ -328,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--profile", type=Path, default=PROFILE_CSV)
     p.add_argument("--raw", type=Path, default=CONFIG.raw_csv)
     p.add_argument("--out", type=Path, default=CONFIG.workbook_xlsx)
+    p.add_argument("--vin-report", type=Path, default=DEFAULT_VIN_REPORT)
     args = p.parse_args(argv)
 
     clean = pd.read_parquet(args.parquet)
@@ -336,7 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     profile = pd.read_csv(args.profile) if args.profile.is_file() else None
     raw = (pd.read_csv(args.raw, usecols=["id"] + [c for c, _ in COMPARE_PAIRS], dtype="string")
            if args.raw.is_file() else None)
-    out = export_workbook(clean, log, store, profile, raw, args.out)
+    vin_report = pd.read_csv(args.vin_report) if args.vin_report.is_file() else None
+    out = export_workbook(clean, log, store, profile, raw, args.out, vin_report)
     print(f"→ {out}")
     return 0
 
