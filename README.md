@@ -51,7 +51,19 @@ TV1 lọc ABT theo đúng ID được giữ trong manifest và gán `split_set` 
 
 Manifest nhóm xe là đầu vào bắt buộc cho production từ 2026. Dữ liệu cũ vẫn dùng được đường chạy theo ID. Khi ABT thay đổi, lưu phiên bản và manifest riêng. So sánh mô hình trên tập đánh giá chung đã khóa.
 
-Exp0 ghép `year` và `odometer` từ `data/raw/vehicles.csv` nếu đủ khóa duy nhất. Các thí nghiệm dùng cùng mẫu và giá tham chiếu. Khi thiếu CSV hoặc khóa không ghép được, Exp0 ghi rõ dùng proxy từ mẫu đã lọc.
+### Chạy thử H02 v0.9
+
+Chạy validator với Parquet và FormulaStore của H02. Dùng manifest nhóm xe đã khóa cho chính phiên bản đó, cùng CSV có `id`, `year` và `odometer`. Chỉ dùng kết quả H02 để phát triển.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts/run_m3_baseline.py --mode production `
+    --abt data/processed/used_cars_clean_v0_9.parquet --dataset-version v0.9 `
+    --split-manifest data/processed/split_manifest_v0_9.parquet `
+    --raw-csv data/raw/vehicles.csv --require-raw-exp0 `
+    --output-root outputs/h02_v0_9
+```
+
+Exp0 và Exp1 dùng cùng các ID trong ABT, cùng giá tham chiếu và cùng cách chia. Exp0 lấy `year` và `odometer` từ CSV gốc. Exp1 dùng tuổi xe tại ngày đăng và số dặm đã chuẩn hóa. Chênh lệch giữa hai cấu hình đo thay đổi đặc trưng trên cohort đã giữ. Khi khóa không ghép đủ hoặc không duy nhất, `--require-raw-exp0` dừng lần chạy trước khi xuất kết quả. Nếu bỏ cờ này, Exp0 có thể dùng proxy từ ABT và ghi rõ trong bảng mô hình.
 
 ## Đọc kết quả
 

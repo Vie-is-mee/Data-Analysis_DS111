@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 
@@ -32,11 +33,24 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     parser.add_argument(
         "--split-manifest", type=Path, help="Manifest đã khóa cho production."
     )
+    parser.add_argument("--abt", type=Path, help="Đường dẫn ABT phiên bản được bàn giao.")
+    parser.add_argument("--raw-csv", type=Path, help="CSV gốc tương ứng để ghép Exp0.")
+    parser.add_argument("--dataset-version", help="Nhãn phiên bản của ABT production.")
+    parser.add_argument("--output-root", type=Path, help="Gốc lưu kết quả của lần chạy.")
+    parser.add_argument(
+        "--require-raw-exp0", action="store_true", help="Dừng nếu Exp0 phải dùng proxy."
+    )
     args = parser.parse_args(argv)
+    mock = args.mode == "mock"
+    if mock and (args.abt or args.raw_csv or args.dataset_version is not None or args.require_raw_exp0):
+        parser.error("--abt, --raw-csv, --dataset-version và --require-raw-exp0 chỉ dùng cho production.")
+    version = args.dataset_version.strip() if args.dataset_version is not None else None
+    if version == "" or (args.abt is not None and version is None):
+        parser.error("Dùng --dataset-version để ghi đúng phiên bản của ABT chỉ định bằng --abt.")
     start = perf_counter()
 
-    mock = args.mode == "mock"
-    path = config.mock_parquet if mock else config.clean_parquet
+    path = config.mock_parquet if mock else (args.abt or config.clean_parquet)
+    output_config = replace(config, root=args.output_root) if args.output_root else config
     print(f"[1/6] Chuẩn bị đầu vào {args.mode} từ {path}")
     if mock and not path.exists():
         generate_mock_clean_sample(config.raw_csv, path, config.mock_sample_rows)
@@ -50,11 +64,16 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
         fast_mode=args.fast,
         config=config,
         split_manifest=args.split_manifest,
+        raw_csv=args.raw_csv,
+        dataset_version=version,
     )
     assignments = suite.split_assignments
     counts = assignments["split_set"].value_counts().to_dict()
     print(f"Phiên bản {suite.dataset_version}. Số dòng từng tập: {counts}")
     if suite.raw_exp0_features is None:
+        if args.require_raw_exp0:
+            print("Không đủ dữ liệu CSV gốc để ghép Exp0 theo listing_id.", file=sys.stderr)
+            return 1
         print("Exp0 dùng proxy raw-minimal từ mẫu đã lọc.")
 
     print("[3/6] Tính VIF và ranking trên train")
@@ -70,14 +89,14 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     winner = suite.evaluate_final()
 
     print("[5/6] In tổng hợp và lưu bảng kết quả")
-    config.ensure_output_directories()
+    output_config.ensure_output_directories()
     summary = registry.to_summary_dataframe()
     columns = ["model_id", "cv_rmse_mean", "val_rmse", "val_r2", "test_rmse", "test_r2"]
     print(summary[columns].round(4).to_string(index=False, na_rep="–"))
     summary.to_csv(
-        config.models_dir / "ablation_summary.csv", index=False, encoding="utf-8-sig"
+        output_config.models_dir / "ablation_summary.csv", index=False, encoding="utf-8-sig"
     )
-    split_output = config.models_dir / "split_assignments.parquet"
+    split_output = output_config.models_dir / "split_assignments.parquet"
     if (
         args.split_manifest is None
         or args.split_manifest.resolve() != split_output.resolve()
@@ -87,9 +106,9 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     print("[6/6] Xuất dự báo test và Workbook TV3")
     test = suite.test_data
     registry.export_predictions_for_dashboard(
-        winner.model_id, test, config.predictions_parquet
+        winner.model_id, test, output_config.predictions_parquet
     )
-    workbook = config.workbook_xlsx.with_name("Project_Workbook_M3_Tracking.xlsx")
+    workbook = output_config.workbook_xlsx.with_name("Project_Workbook_M3_Tracking.xlsx")
     export_experiment_tracking_to_excel(registry, vif, ranking, workbook)
     print(
         f"[PASS] {winner.model_id}, {len(test):,} dự báo test. Hoàn thành trong {perf_counter() - start:.2f} giây."
