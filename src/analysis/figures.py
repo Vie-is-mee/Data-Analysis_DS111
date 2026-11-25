@@ -146,7 +146,10 @@ def plot_cluster_curves(curve: pd.DataFrame, out_dir: Path, version: str | None)
     ax.set_yscale("log")
     ax.set_xlabel("Tuổi xe (năm)")
     ax.set_ylabel("Giá (USD, trục log)")
-    ax.legend(frameon=False)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(frameon=False)
+    else:
+        ax.text(0.5, 0.5, "Không có tuổi nào đủ 30 tin trong các cụm hãng", ha="center", transform=ax.transAxes)
     return save_figure(
         fig, out_dir, "eda_Q2_cluster_age_curves",
         title="Q2 · Trung vị giá theo tuổi của ba cụm hãng (xe 1–20 tuổi)",
@@ -188,7 +191,9 @@ def plot_depreciation_forest(
     ax_year.invert_yaxis()
     ax_year.set_xlabel("% giá thay đổi mỗi năm tuổi")
     ax_miles.set_xlabel("% giá thay đổi mỗi 10.000 dặm")
-    ax_year.legend(frameon=False, fontsize=BASE_FONT - 2, loc="lower left")
+    handles, labels = ax_year.get_legend_handles_labels()
+    if handles:  # khung phải trống phía gần 0 nên đặt chú thích ở đó, không che điểm dữ liệu
+        ax_miles.legend(handles, labels, frameon=False, fontsize=BASE_FONT - 2, loc="lower right")
     n_total = slopes.loc[slopes["controls"] == "none", "n"].sum()
     return save_figure(
         fig, out_dir, name, title=title,
