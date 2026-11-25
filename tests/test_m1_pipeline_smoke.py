@@ -85,7 +85,7 @@ def test_m1_new_cleaning_rules(tmp_path):
     raw.loc[111, "odometer_rolled_over"] = 1
     raw.loc[112, "address_country"] = "CA"
     # Cùng VIN, tin 121 mới hơn → giữ 121, bỏ 120.
-    vin = "1FM5K8GCXNGA77516"
+    vin = "1M8GDM9AXKP042788"
     raw.loc[[120, 121], "VIN"] = vin
     raw.loc[120, "posting_date"] = "2021-05-01T10:00:00-0500"
     raw.loc[121, "posting_date"] = "2021-05-09T10:00:00-0500"
@@ -109,7 +109,7 @@ def test_m1_new_cleaning_rules(tmp_path):
 def test_dedup_vin_keeps_valid_older_listing_when_newest_has_no_price(tmp_path):
     raw = _fake_raw()
     ids = raw["id"]
-    raw.loc[[200, 201], "VIN"] = "2B3LJ74W39H549395"
+    raw.loc[[200, 201], "VIN"] = "1HGCM82633A004352"
     raw.loc[[200, 201], ["year", "odometer"]] = [2015, 50_000]
     raw.loc[200, ["posting_date", "price"]] = ["2021-05-01T10:00:00-0500", 15_000]
     raw.loc[201, ["posting_date", "price"]] = ["2021-05-09T10:00:00-0500", 0]  # "gọi để biết giá"
@@ -200,11 +200,11 @@ def test_raw_profile_has_decision_columns(tmp_path):
     raw_csv = tmp_path / "vehicles.csv"
     _fake_raw(50).to_csv(raw_csv, index=False)
     raw = _fake_raw(50)
-    raw["description"] = "CALL OR TEXT: (669) 248-7579"
+    raw["description"] = "CALL OR TEXT: (555) 555-0142"
     raw.to_csv(raw_csv, index=False)
     profile = profile_raw(load_raw(raw_csv, usecols=None)).set_index("column")
     assert {"keep_drop", "reason", "missing_pct"} <= set(profile.columns)
     assert set(PIPELINE_COLUMNS) <= set(profile.index)
     # Sheet 01 lên Git → không được lộ SĐT/URL/VIN trong cột ví dụ.
-    assert "248-7579" not in profile.loc["description", "example_values"]
+    assert "555-0142" not in profile.loc["description", "example_values"]
     assert "example.invalid" not in profile.loc["url", "example_values"]
