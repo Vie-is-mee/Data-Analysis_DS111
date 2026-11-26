@@ -1,0 +1,42 @@
+﻿column,dtype_raw,looks_numeric,n_rows,missing_count,missing_pct,n_unique,example_values,keep_drop,reason
+id,string,True,295451,0,0.0,295451,7994372850 | 7994372787 | 7994372559 | 7994372553 | 7994372166,giữ,"Khóa listing_id, duy nhất 100%"
+url,string,False,295451,0,0.0,295451,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,"Định danh dạng URL, trùng thông tin với id"
+region,string,False,295451,0,0.0,400,SF bay area | abilene | akron / canton | albany | albuquerque,giữ,"Vùng Craigslist (400 nhãn), cột hợp đồng"
+region_url,string,False,295451,0,0.0,412,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,Trùng thông tin với region
+price,string,True,295451,0,0.0,15574,27999 | 2200 | 15999 | 12000 | 18999,giữ,"Biến mục tiêu; 3,5% bằng 0 và 4,3% < 500 USD cần lọc"
+year,string,True,295451,26,0.01,114,2022 | 1969 | 2016 | 1974 | 2009,giữ,"Tính car_age; 11,5% xe đời 2023–2027 (dữ liệu đăng năm 2026)"
+manufacturer,string,False,295451,10792,3.65,42,ford | volkswagen | rover | cadillac | dodge,giữ,"Hãng xe; thiếu 3,65%; có 'rover' và 'land rover' cần gộp"
+model,string,False,295451,3359,1.14,27958,explorer st | bug | sport | eldorado convertible | challenger lc srt8,giữ,"Dòng xe; 27.958 nhãn, cần chuẩn hóa"
+condition,string,False,295451,135490,45.86,6,excellent | fair | good | like new | new,giữ,"Tình trạng; thiếu 45,9% → nhãn 'unknown' riêng, không điền"
+cylinders,string,False,295451,80167,27.13,8,6 cylinders | 4 cylinders | 8 cylinders | 5 cylinders | 3 cylinders,giữ,"Tách số; thiếu 27,1% và 2% 'other' → cần quy ước"
+fuel,string,False,295451,1131,0.38,5,gas | electric | diesel | hybrid | other,giữ,"Nhiên liệu, 5 nhãn, thiếu 0,4%"
+odometer,string,True,295451,4036,1.37,83749,99179 | 90000 | 82896 | 89687 | 81724,giữ,"Số dặm; thiếu 1,4%; 0,3% > 500.000; 1,2% < 100 dặm"
+title_status,string,False,295451,6816,2.31,6,clean | salvage | rebuilt | parts only | missing,giữ,"Tình trạng pháp lý, 6 nhãn đúng hợp đồng; thiếu 2,3%"
+transmission,string,False,295451,1556,0.53,3,automatic | manual | other,giữ,"Hộp số, 3 nhãn"
+VIN,string,False,295451,121119,40.99,90093,[ẩn: có thể chứa dữ liệu cá nhân],giữ (phụ trợ làm sạch),Không dùng làm biến; 84.239 VIN trùng → dùng để phát hiện tin đăng lại
+drive,string,False,295451,70375,23.82,3,4wd | rwd | fwd,giữ,"Dẫn động, thiếu 23,8% → 'unknown'"
+size,string,False,295451,295451,100.0,0,,bỏ,Trống 100%
+type,string,False,295451,15809,5.35,13,SUV | other | convertible | coupe | sedan,giữ,"Kiểu xe, 13 nhãn, thiếu 5,4%"
+paint_color,string,False,295451,74718,25.29,12,grey | green | white | blue | orange,bỏ,"Không có trong hợp đồng; màu sơn ít liên quan định giá, thiếu 25%"
+image_url,string,False,295451,3538,1.2,181305,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,"Ảnh, không xử lý ảnh trong đồ án"
+description,string,False,295451,6,0.0,231929,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,"Văn bản tự do, chứa SĐT/quảng cáo; 63.521 mô tả trùng (dấu hiệu tin lặp)"
+county,string,False,295451,295451,100.0,0,,bỏ,Trống 100%
+state,string,False,295451,0,0.0,51,ca | tx | oh | ny | ga,giữ,"Mã bang, 51 nhãn"
+lat,string,True,295451,149,0.05,37561,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,Vị trí đã thể hiện bằng state/region
+long,string,True,295451,149,0.05,37958,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,Vị trí đã thể hiện bằng state/region
+posting_date,string,False,295451,0,0.0,278467,2026-11-02T19:24:16-0800 | 2026-11-02T19:23:52-0800 | 2026-11-02T19:22:44-0800 | 2026-11-02T19:22:42-0800 | 2026-11-02T19:21:10-0800,giữ,Lấy posting_year; mọi tin đăng 30/09–03/11/2026
+seller_type,string,False,295451,0,0.0,2,dealer | owner,giữ (phụ trợ làm sạch),"Đại lý/chính chủ — biến có ý nghĩa giá nhưng chưa có trong hợp đồng, đề xuất thêm"
+title,string,False,295451,5,0.0,161273,2022 Ford Explorer ST | 69 VW Bug All Original Runs and drives current registration | 2016 Land Rover Range Rover Sport 3.0L V6 Supercharged HSE | 1974 Cadillac Eldorado Convertible | 2009 Dodge Challenger SRT8,giữ (phụ trợ làm sạch),Tiêu đề tin; có thể cứu manufacturer bị thiếu (vd '2022 Ford Explorer ST')
+updated_date,string,False,295451,179711,60.83,112386,2026-11-02T19:22:45-0800 | 2026-11-02T19:19:33-0800 | 2026-11-02T19:16:02-0800 | 2026-11-02T19:06:20-0800 | 2026-11-02T18:58:18-0800,bỏ,"Thiếu 60,8%; không cần cho định giá"
+address_street,string,False,295451,138758,46.96,11003,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,"Dữ liệu địa chỉ cá nhân/đại lý, thiếu 47%"
+address_city,string,False,295451,14471,4.9,6953,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,Chi tiết vị trí dư thừa so với region
+address_state,string,False,295451,14471,4.9,57,CA | NV | WA | FL | BC,bỏ,Trùng với state; có cả tỉnh Canada
+address_postal_code,string,True,295451,14471,4.9,14543,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,"Dữ liệu vị trí chi tiết, không cần"
+address_country,string,False,295451,14471,4.9,2,US | CA,giữ (phụ trợ làm sạch),535 tin ở Canada (giá có thể là CAD) → loại để giữ đơn vị USD
+image_count,string,True,295451,0,0.0,25,20 | 4 | 8 | 17 | 19,bỏ,Số ảnh; không thuộc hợp đồng (có thể đề xuất sau)
+image_urls,string,False,295451,3538,1.2,189472,[ẩn: có thể chứa dữ liệu cá nhân],bỏ,Danh sách URL ảnh
+delivery_available,string,True,295451,0,0.0,2,0 | 1,bỏ,Không thuộc hợp đồng
+odometer_broken,string,True,295451,0,0.0,2,0 | 1,giữ (phụ trợ làm sạch),"2.044 tin báo đồng hồ hỏng → odometer không tin cậy, loại"
+odometer_rolled_over,string,True,295451,0,0.0,2,0 | 1,giữ (phụ trợ làm sạch),"2.293 tin báo đồng hồ quay vòng → odometer sai, loại"
+monthly_payment,string,False,295451,289398,97.95,464,$187 | $300 | $250 | $350 | $369,bỏ,"Thiếu 98%; là thông tin trả góp, gần với giá (rò rỉ)"
+other_attributes,string,False,295451,291688,98.73,1,cryptocurrency ok,bỏ,"Thiếu 98,7%, chỉ 1 nhãn"
