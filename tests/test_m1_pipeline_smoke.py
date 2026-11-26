@@ -163,6 +163,8 @@ def test_manifest_sets_split_and_vin_report(tmp_path):
     report = second.vin_report.set_index("seller_type")
     assert report.loc["dealer", "Bị gộp"] == 2 and report.loc["Tổng", "Bị gộp"] == 2
     assert report.loc["Tổng", "Số dòng sau"] == len(second.data)
+    assert report.loc["Tổng", "Năm trung vị sau"] == second.data["year"].median()
+    assert report.loc["Tổng", "Odometer trung vị trước"] == first.data["odometer"].median()
 
 
 def test_stale_manifest_is_rejected(tmp_path):

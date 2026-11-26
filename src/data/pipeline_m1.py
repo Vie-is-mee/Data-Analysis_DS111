@@ -53,7 +53,11 @@ def vin_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def vin_report(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
-    """Số dòng + giá trung vị trước/sau gộp tin đăng lại, theo loại người bán (hợp đồng 1.1)."""
+    """Số dòng + giá trung vị trước/sau gộp tin đăng lại, theo loại người bán (hợp đồng 1.1).
+
+    Thêm năm model và odometer trung vị (ngoài yêu cầu hợp đồng) để thấy việc gộp có làm
+    lệch cơ cấu xe hay không, không chỉ lệch giá.
+    """
     groups = [(k, before[before["seller_type"] == k], after[after["seller_type"] == k])
               for k in sorted(before["seller_type"].unique())]
     rows = []
@@ -62,7 +66,11 @@ def vin_report(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
         rows.append({"seller_type": name, "Số dòng trước": len(b), "Số dòng sau": len(a),
                      "Bị gộp": removed, "% bị gộp": round(removed / max(len(b), 1) * 100, 2),
                      "Giá trung vị trước": float(b["price"].median()),
-                     "Giá trung vị sau": float(a["price"].median())})
+                     "Giá trung vị sau": float(a["price"].median()),
+                     "Năm trung vị trước": float(b["year"].median()),
+                     "Năm trung vị sau": float(a["year"].median()),
+                     "Odometer trung vị trước": float(b["odometer"].median()),
+                     "Odometer trung vị sau": float(a["odometer"].median())})
     return pd.DataFrame(rows)
 
 

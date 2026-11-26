@@ -331,3 +331,20 @@ từ chối manifest cũ.
 - **Đã tìm ra nguyên nhân file VIN bị hỏng:** `test_m1_pipeline_passes_handoff_validation` gọi `main()` mà không truyền `--vin-out`/`--vin-report`, nên mỗi lần chạy test lại ghi đè file VIN thật và xóa báo cáo VIN thật.
   - Sửa: test truyền đường dẫn trong `tmp_path`.
   - Kiểm tra bằng md5 trước/sau khi chạy pytest: file thật không đổi. 32/32 test PASS.
+
+## 26/11 — Báo cáo gộp VIN: thêm năm model và odometer theo người bán
+- `vin_report` có thêm năm trung vị và odometer trung vị trước/sau gộp. Phần này nằm ngoài yêu cầu hợp đồng 1.1, vốn chỉ đòi số dòng và giá.
+- Kết quả trên ABT v0.9:
+
+| Người bán | Năm (trước → sau) | Odometer (trước → sau) | Giá (trước → sau) |
+|---|---|---|---|
+| dealer | 2016 → 2016 | 104.044 → 106.712 | 14.999 → 13.500 |
+| private | 2011 → 2011 | 128.000 → 128.000 | 7.600 → 7.500 |
+| Tổng | 2015 → 2015 | 109.131 → 113.430 | 12.995 → 10.999 |
+
+- **Ý cho báo cáo (hiệu ứng cơ cấu):**
+  - Trong từng nhóm, giá chỉ giảm nhẹ: dealer −10%, private −1%. Nhưng giá trung vị toàn bộ giảm tới 15%.
+  - Lý do: tỷ trọng tin dealer giảm từ 73,8% xuống 63,9%. Dealer có giá cao hơn nên khi tỷ trọng giảm, giá chung kéo xuống.
+  - Tin dealer bị đăng lại thường là xe giá cao hơn và đi ít hơn một chút. Năm model không đổi.
+  - Kết luận: không gộp thì mẫu bị lệch về phía tin đại lý.
+- Kiểm tra: 32/32 test PASS, validator 36/36 PASS. ABT v0.9 không đổi, chỉ `m1_vin_report.csv` có thêm cột. Workbook Sheet 03 đã xuất lại.
