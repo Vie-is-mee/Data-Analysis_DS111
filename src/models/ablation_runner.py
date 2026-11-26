@@ -155,6 +155,8 @@ class AblationExperimentSuite:
         fast_mode: bool,
         config: ProjectConfig,
         split_manifest: Path | None = None,
+        raw_csv: Path | None = None,
+        dataset_version: str | None = None,
     ) -> "AblationExperimentSuite":
         """Đọc Parquet đã qua validator và áp dụng cách chia của TV3."""
         columns = list(REQUIRED_CLEAN_SCHEMA)
@@ -200,8 +202,8 @@ class AblationExperimentSuite:
                     )
                 if GROUP_COLUMN in manifest:
                     data[GROUP_COLUMN] = manifest[GROUP_COLUMN].to_numpy()
-            raw = read_raw_exp0_features(config.raw_csv, data["listing_id"])
-            version = "v1.0"
+            raw = read_raw_exp0_features(raw_csv or config.raw_csv, data["listing_id"])
+            version = dataset_version or "v1.0"
         return cls(
             data,
             fast_mode,
