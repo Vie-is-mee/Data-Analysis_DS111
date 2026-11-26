@@ -54,7 +54,11 @@ def test_m1_pipeline_passes_handoff_validation(tmp_path):
     out, store = tmp_path / "clean.parquet", tmp_path / "store.joblib"
 
     assert main(["--raw", str(raw_csv), "--out", str(out), "--store", str(store),
-                 "--log", str(tmp_path / "log.csv")]) == 0
+                 "--log", str(tmp_path / "log.csv"),
+                 "--vin-out", str(tmp_path / "vin.parquet"),
+                 "--vin-report", str(tmp_path / "vin_report.csv")]) == 0
+    # Không được ghi đè file thật trong data/processed (lỗi 26/11).
+    assert (tmp_path / "vin.parquet").is_file()
 
     report = validate_handoff_dataset(out, store)
     failed = [f"{c.name}: {c.detail}" for c in report.checks if not c.passed]
