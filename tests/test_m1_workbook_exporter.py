@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 
 from src.data.pipeline_m1 import build_clean_dataset
 from src.data.raw_profile import load_raw, profile_raw
-from src.data.workbook_exporter import M1_SHEETS, SAMPLE_SIZE, export_workbook
+from src.data.workbook_exporter import M1_SHEETS, SAMPLE_SIZE, build_label_table, export_workbook
 from tests.test_m1_pipeline_smoke import _fake_raw
 
 
@@ -53,3 +53,27 @@ def test_sheet07_compares_fixed_ids_one_to_one(tmp_path):
     _export(tmp_path, out)
     again = [r[0] for r in load_workbook(out)["07_Sample_Comparison"].iter_rows(min_row=3, values_only=True)]
     assert again == ids
+
+
+def test_label_table_covers_every_label_with_ordinal_codes(tmp_path):
+    out = tmp_path / "Project_Workbook.xlsx"
+    data = _export(tmp_path, out).data
+    table = build_label_table(data)
+
+    # Mỗi cột: đủ mọi nhãn, tổng số dòng = số dòng ABT.
+    for col, part in table.groupby("Cột"):
+        assert set(part["Nhãn chuẩn"]) == set(data[col].unique())
+        assert part["Số dòng"].sum() == len(data)
+
+    cond = table[table["Cột"] == "condition_clean"].set_index("Nhãn chuẩn")
+    assert cond["Mã Ordinal"].drop("unknown", errors="ignore").is_monotonic_increasing
+    if "unknown" in cond.index:
+        assert cond.loc["unknown", "Mã Ordinal"] == ""
+    # Luật gộp lấy thẳng từ code: chevy/chev → chevrolet.
+    manu = table[table["Cột"] == "manufacturer_clean"].set_index("Nhãn chuẩn")
+    if "chevrolet" in manu.index:
+        assert "chevy" in manu.loc["chevrolet", "Gộp từ nhãn gốc"]
+
+    sheet = load_workbook(out)["05_Encoding"]
+    texts = [c.value for row in sheet.iter_rows() for c in row if isinstance(c.value, str)]
+    assert any(t.startswith("Bảng nhãn chuẩn") for t in texts)

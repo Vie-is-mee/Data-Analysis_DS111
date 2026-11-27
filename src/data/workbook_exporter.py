@@ -29,10 +29,12 @@ from openpyxl.utils import get_column_letter
 from scipy import stats
 
 from configs.project_config import (
+    CONDITION_ORDINAL,
     CONFIG,
     HIGH_CARDINALITY_CATEGORICAL,
     LOW_CARDINALITY_CATEGORICAL,
     REQUIRED_CLEAN_SCHEMA,
+    TITLE_STATUS_ORDINAL_EXPERIMENTAL,
 )
 from src.core.formula_store import FormulaStore
 from src.data import formatter, selector
@@ -183,6 +185,56 @@ def build_sheet05(clean: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# Bảng nhãn chuẩn (M1-08): cột phân loại → mã Ordinal nếu có thứ tự (None = không thứ tự).
+LABEL_COLUMNS: dict[str, dict[str, int] | None] = {
+    "condition_clean": dict(CONDITION_ORDINAL),
+    "title_status_clean": dict(TITLE_STATUS_ORDINAL_EXPERIMENTAL),
+    "year_era": {"Classic": 0, "Old": 1, "Mid": 2, "Modern": 3},
+    "fuel": None, "transmission": None, "drive": None, "type": None,
+    "seller_type": None, "manufacturer_clean": None,
+}
+RARE_SHARE = 0.001  # nhãn < 0,1% số dòng → nhắc TV3 (One-Hot có thể ra cột gần như toàn 0)
+
+
+def _merged_from(col: str) -> dict[str, str]:
+    """Nhãn chuẩn → các cách viết gốc đã gộp vào (lấy thẳng từ luật trong code)."""
+    sources: dict[str, dict[str, str]] = {
+        "manufacturer_clean": formatter.MANUFACTURER_ALIASES,
+        "seller_type": {"owner": "private"},
+    }
+    merged: dict[str, list[str]] = {}
+    for raw, std in sources.get(col, {}).items():
+        merged.setdefault(std, []).append(raw)
+    return {k: ", ".join(sorted(v)) for k, v in merged.items()}
+
+
+def build_label_table(clean: pd.DataFrame) -> pd.DataFrame:
+    """Mỗi nhãn chuẩn: mã Ordinal (nếu có), số dòng, %, số dòng train, nhãn gốc được gộp vào."""
+    rows = []
+    train = clean["split_set"].eq("train") if "split_set" in clean else pd.Series(True, index=clean.index)
+    for col, codes in LABEL_COLUMNS.items():
+        if col not in clean.columns:
+            continue
+        counts = clean[col].value_counts()
+        n_train = clean.loc[train, col].value_counts()
+        merged = _merged_from(col)
+        order = sorted(counts.index, key=lambda v: (codes.get(v, 99) if codes else 0, -counts[v]))
+        for label in order:
+            share = counts[label] / len(clean)
+            code = codes.get(label) if codes else None
+            note = "Khuyết hoặc nhãn ngoài miền hợp đồng" if label == "unknown" else ""
+            if codes is not None and code is None:
+                note += " → không gán thứ tự, mã hóa riêng (cờ / One-Hot)"
+            if share < RARE_SHARE:
+                note = (note + "; " if note else "") + "Nhãn hiếm (<0,1%)"
+            rows.append({"Cột": col, "Nhãn chuẩn": label,
+                         "Mã Ordinal": "" if code is None else int(code),
+                         "Số dòng": int(counts[label]), "% dòng": round(share * 100, 2),
+                         "Số dòng train": int(n_train.get(label, 0)),
+                         "Gộp từ nhãn gốc": merged.get(label, ""), "Ghi chú": note})
+    return pd.DataFrame(rows)
+
+
 def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dictionary = pd.DataFrame([
         {"Cột": c, "Kiểu": t, "Vai trò": COLUMN_ROLES.get(c, "Đặc trưng"),
@@ -289,6 +341,11 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
     r = _write_table(ws, build_sheet05(clean), r)
     ws.cell(r, 1, "Nhánh chính (theo slide Bài 2): One-Hot cho biến không thứ tự, Ordinal cho condition; "
                   "Label Encoding chỉ làm đối chứng. TV3 fit encoder trên train trong pipeline (Exp3A/3B).")
+    r = _write_title(ws, r + 2, "Bảng nhãn chuẩn — miền giá trị sau chuẩn hóa, mã Ordinal và nhãn gốc đã gộp")
+    r = _write_table(ws, build_label_table(clean), r)
+    ws.cell(r, 1, "Chuẩn hóa chung: chữ thường, bỏ khoảng trắng thừa, rỗng → 'unknown'. "
+                  "Mã title_status chỉ là thứ tự thực nghiệm (đối chứng One-Hot ở Exp 3). "
+                  "state (51 mã bang) giữ nguyên mã viết thường nên không liệt kê.")
 
     dictionary, target_corr, matrix, vif = build_sheet06(clean)
     ws = book["06_Selection"]

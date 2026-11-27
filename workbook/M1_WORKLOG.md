@@ -348,3 +348,16 @@ từ chối manifest cũ.
   - Tin dealer bị đăng lại thường là xe giá cao hơn và đi ít hơn một chút. Năm model không đổi.
   - Kết luận: không gộp thì mẫu bị lệch về phía tin đại lý.
 - Kiểm tra: 32/32 test PASS, validator 36/36 PASS. ABT v0.9 không đổi, chỉ `m1_vin_report.csv` có thêm cột. Workbook Sheet 03 đã xuất lại.
+
+## 27/11 — M1-08: Bảng nhãn chuẩn ở Sheet 05
+- `build_label_table` liệt kê cho từng cột phân loại: mỗi nhãn sau chuẩn hóa, mã Ordinal (nếu có), số dòng, % dòng, số dòng train và các nhãn gốc đã gộp vào.
+  - Các cột: condition, title_status, year_era, fuel, transmission, drive, type, seller_type, manufacturer.
+  - Nhãn gốc được lấy thẳng từ luật trong code (`MANUFACTURER_ALIASES`, owner → private), nên bảng không lệch khỏi code.
+- Trên ABT v0.9 bảng có 108 dòng nhãn. Những điểm đáng đưa vào báo cáo:
+  - **condition:** `unknown` chiếm 37,7%, là nhãn lớn nhất. Nhãn này không có mã thứ tự và được mã hóa riêng bằng cờ `condition_missing`.
+  - **title_status:** `clean` chiếm 92,3%. `parts only` chỉ có 89 tin (0,05%) → nhãn hiếm. Mã thứ tự chỉ là thực nghiệm, Exp 3 sẽ đối chứng với One-Hot.
+  - **drive:** `unknown` chiếm 24,9%, còn nhiều hơn rwd (14,6%).
+  - **manufacturer:** 60 hãng. Có 4 nhóm cách viết được gộp: chevy/chev → chevrolet; benz/mercedes → mercedes-benz; vw/volkswagon → volkswagen; rover/landrover → land rover. Lamborghini chỉ có 3 tin (2 tin ở train) → TV3 cần xử lý nhãn hiếm hoặc chưa từng gặp khi One-Hot.
+  - **seller_type:** chỉ còn dealer và private (nhãn owner đã gộp vào private).
+- `state` (51 bang) không đưa vào bảng vì chỉ chuyển về chữ thường.
+- Kiểm tra: thêm test mỗi cột đủ nhãn và tổng số dòng đúng, mã condition tăng dần, `unknown` không có mã, chevy được gộp vào chevrolet. 71/71 test PASS. Đã xuất lại Workbook từ ABT v0.9.
