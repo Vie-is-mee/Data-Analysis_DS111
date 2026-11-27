@@ -309,3 +309,25 @@ từ chối manifest cũ.
   Đã thay bằng số hư cấu dải 555-01xx. Chuỗi `12345678901234567` trong code M3 là VIN giữ chỗ,
   không phải dữ liệu cá nhân.
 - Ghi nhận cho M3: commit `1f2c9f7` chứa 2 VIN thật + 1 số điện thoại thật.
+
+## 26/11 — Gửi danh sách VIN cho TV3 để khóa manifest v0.9
+- Bản `vin_candidates_local.parquet` cũ chỉ còn 769 dòng VIN rỗng do một lần chạy test ghi đè, nên phải chạy lại lượt 1 trên dữ liệu thật.
+- Bản mới có 272.563 dòng, 163.108 dòng có VIN, `listing_id` không trùng, gồm 3 cột listing_id/VIN/posting_date.
+- Chạy thử bằng code TV3 ra 194.083 dòng (train 135.842, val 29.136, test 29.105), khớp lần đo 25/11.
+- File được gửi riêng qua Drive, không đưa lên Git vì có VIN. Mỗi khi đổi luật làm sạch trước bước VIN thì phải xuất lại file này.
+- Bài học: chạy test có thể ghi đè file trong `data/processed/`. Kiểm tra số dòng trước khi gửi file cho người khác.
+
+## 26/11 — ABT v0.9 cho H02 (dùng manifest TV3 đã khóa)
+- TV3 gửi `split_manifest_v0_9.parquet`: 194.083 dòng, `listing_id` không trùng, mọi ID đều có trong danh sách VIN của M1.
+- Lượt 2: `pipeline_m1 --split-manifest ... --out used_cars_clean_v0_9.parquet --store formula_store_v0_9.joblib`.
+  - ABT có 194.083 dòng × 29 cột, không còn cột VIN, split khớp manifest 100%.
+  - Chia: train 135.842 / val 29.136 / test 29.105.
+- Gộp tin theo người bán:
+  - dealer: 201.081 → 124.027 (gộp 38,3%), giá trung vị 14.999 → 13.500.
+  - private: 71.482 → 70.056 (gộp 2,0%), giá trung vị 7.600 → 7.500.
+  - Tổng: 272.563 → 194.083 (gộp 28,8%), giá trung vị 12.995 → 10.999.
+  - Ý cho báo cáo: đại lý đăng lại cùng một xe rất nhiều lần, nên nếu không gộp thì mô hình bị lệch về xe đại lý giá cao.
+- Validator: 36/36 PASS, READY FOR HOT-SWAP. Workbook xuất lại có bảng VIN theo người bán ở Sheet 03.
+- **Đã tìm ra nguyên nhân file VIN bị hỏng:** `test_m1_pipeline_passes_handoff_validation` gọi `main()` mà không truyền `--vin-out`/`--vin-report`, nên mỗi lần chạy test lại ghi đè file VIN thật và xóa báo cáo VIN thật.
+  - Sửa: test truyền đường dẫn trong `tmp_path`.
+  - Kiểm tra bằng md5 trước/sau khi chạy pytest: file thật không đổi. 32/32 test PASS.
