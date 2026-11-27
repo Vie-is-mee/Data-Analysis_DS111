@@ -34,6 +34,8 @@ class ModelEntry:
     test_log_metrics: RegressionMetricsReport | None = None
     dataset_version: str = "v1.0"
     random_state: int = RANDOM_STATE
+    train_metrics: RegressionMetricsReport | None = None
+    train_log_metrics: RegressionMetricsReport | None = None
 
 
 class ModelRegistry:
@@ -101,8 +103,10 @@ class ModelRegistry:
                 {f"cv_{key}_std": value for key, value in entry.cv_metrics_std.items()}
             )
             for prefix, report in (
+                ("train", entry.train_metrics),
                 ("val", entry.val_metrics),
                 ("test", entry.test_metrics),
+                ("train_log", entry.train_log_metrics),
                 ("val_log", entry.val_log_metrics),
                 ("test_log", entry.test_log_metrics),
             ):
@@ -113,6 +117,24 @@ class ModelRegistry:
                             for key, value in asdict(report).items()
                         }
                     )
+            if (
+                entry.train_metrics is not None
+                and "r2" in entry.cv_metrics_mean
+                and np.isfinite(entry.train_metrics.r2)
+                and np.isfinite(entry.cv_metrics_mean["r2"])
+            ):
+                row["train_cv_r2_gap"] = (
+                    entry.train_metrics.r2 - entry.cv_metrics_mean["r2"]
+                )
+            if (
+                entry.train_metrics is not None
+                and "rmse" in entry.cv_metrics_mean
+                and np.isfinite(entry.train_metrics.rmse)
+                and np.isfinite(entry.cv_metrics_mean["rmse"])
+            ):
+                row["cv_train_rmse_gap"] = (
+                    entry.cv_metrics_mean["rmse"] - entry.train_metrics.rmse
+                )
             rows.append(row)
         return pd.DataFrame(rows)
 

@@ -5,7 +5,11 @@ from dataclasses import asdict
 import pandas as pd
 import pytest
 
-from scripts.report_m3_residuals import segment_errors, validate_test_predictions
+from scripts.report_m3_residuals import (
+    main as report_main,
+    segment_errors,
+    validate_test_predictions,
+)
 from src.models.metrics import evaluate_regression
 
 
@@ -65,3 +69,78 @@ def test_residuals_reject_mixed_handoffs(handoff, table, column, value, error):
     frame.loc[index, column] = value
     with pytest.raises(ValueError, match=error):
         validate_test_predictions(*handoff, "dev-test")
+
+
+def test_report_cli_exports_distribution_ablation_and_compact_summary(handoff, tmp_path):
+    abt, splits, pred, summary = handoff
+    summary = pd.concat(
+        [
+            summary.assign(
+                model_family="Traditional",
+                target_mode="raw_price",
+                train_r2=0.80,
+                cv_r2_mean=0.72,
+                train_cv_r2_gap=0.08,
+                cv_rmse_mean=620.0,
+                cv_mae_mean=450.0,
+                val_r2=0.71,
+                val_rmse=630.0,
+                train_time_sec=0.5,
+            ),
+            summary.assign(
+                model_id="Exp4_Ridge",
+                model_name="Ridge",
+                model_family="Traditional",
+                experiment_stage="Exp4_Benchmark",
+                target_mode="log_price",
+                test_evaluated=False,
+                train_r2=0.84,
+                cv_r2_mean=0.78,
+                train_cv_r2_gap=0.06,
+                cv_rmse_mean=510.0,
+                cv_mae_mean=390.0,
+                val_r2=0.77,
+                val_rmse=520.0,
+                train_time_sec=0.6,
+            ),
+        ],
+        ignore_index=True,
+    )
+    abt_path = tmp_path / "abt.parquet"
+    splits_path = tmp_path / "splits.parquet"
+    pred_path = tmp_path / "pred.parquet"
+    summary_path = tmp_path / "summary.csv"
+    out_dir = tmp_path / "q5_report"
+    abt.to_parquet(abt_path, index=False)
+    splits.to_parquet(splits_path, index=False)
+    pred.to_parquet(pred_path, index=False)
+    summary.to_csv(summary_path, index=False)
+
+    assert (
+        report_main(
+            [
+                "--abt", str(abt_path),
+                "--splits", str(splits_path),
+                "--predictions", str(pred_path),
+                "--summary", str(summary_path),
+                "--dataset-version", "dev-test",
+                "--min-group-n", "2",
+                "--out", str(out_dir),
+            ]
+        )
+        == 0
+    )
+    for filename in (
+        "m3_key_numbers.csv",
+        "m3_residual_segments.csv",
+        "m3_ablation_compact.csv",
+        "residual_run_manifest.json",
+        "model_actual_vs_predicted.png",
+        "model_residuals.png",
+        "model_distribution_actual_vs_predicted.png",
+        "model_ablation_comparison.png",
+    ):
+        target = out_dir / filename
+        assert target.is_file() and target.stat().st_size > 0
+    compact = pd.read_csv(out_dir / "m3_ablation_compact.csv")
+    assert len(compact) == 2 and "train_r2" in compact.columns and "cv_r2_mean" in compact.columns

@@ -31,8 +31,12 @@ _METRICS = [
         "1 − (1 − R²)(n − 1)/(n − p − 1). Ô trống khi nhãn hằng hoặc n ≤ p + 1. Với cây, p là số cột đầu vào chứ không đại diện bậc tự do của mô hình.",
     ),
     (
-        "RMSE / MAE",
-        "Căn trung bình sai số bình phương và trung bình sai số tuyệt đối. Các cột val/test thường tính bằng USD.",
+        "MSE / RMSE / MAE",
+        "MSE = SS_res / n; RMSE = √MSE (cùng đơn vị USD, phạt mạnh sai số lớn ở đuôi); MAE = trung bình |sai số|. Các cột train/val/test chính tính bằng USD.",
+    ),
+    (
+        "Kiểm tra Underfit / Overfit",
+        "So train_r2 với cv_r2_mean (train_cv_r2_gap) và train_rmse với cv_rmse_mean (cv_train_rmse_gap). Cả hai cùng kém là Underfit; train cao vượt trội còn CV thấp là Overfit.",
     ),
     ("MAPE (%)", "Trung bình |phần dư / giá thực| × 100 trên nhãn khác 0."),
     (
@@ -44,8 +48,8 @@ _METRICS = [
         "Dự báo USD = exp(dự báo log) × mean(exp(phần dư log train)). Hệ số của mô hình cuối dùng dự báo OOF trên train.",
     ),
     (
-        "Tuyến tính theo tham số",
-        "ln(P) = ln(P₀) − k × car_age − β × ln(1 + odometer). Thêm car_age² vẫn tuyến tính theo các hệ số.",
+        "Tuyến tính theo tham số & Đa thức",
+        "ln(P) = ln(P₀) − k × car_age − β × ln(1 + odometer). Bổ sung car_age² (hồi quy đa thức bậc 2 theo tuổi xe) vẫn tuyến tính theo hệ số và bắt được vùng xe cổ tăng giá.",
     ),
     (
         "VIF và ranking",
