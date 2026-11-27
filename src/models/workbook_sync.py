@@ -44,8 +44,12 @@ _METRICS = [
         "Cột *_log_* đo trực tiếp trên log tự nhiên trước nghịch đảo. MAPE theo log không diễn giải bằng phần trăm USD.",
     ),
     (
-        "Hiệu chỉnh Duan",
-        "Dự báo USD = exp(dự báo log) × mean(exp(phần dư log train)). Hệ số của mô hình cuối dùng dự báo OOF trên train.",
+        "Hiệu chỉnh Duan (toàn cục & phân vị)",
+        "Dự báo USD = exp(dự báo log) × hệ số Duan từ phần dư OOF trên train. Nhánh Exp5 dùng Duan theo 10 phân vị dự báo để xử lý phương sai không đồng nhất giữa xe phổ thông và xe cổ.",
+    ),
+    (
+        "Exp5 — Phần dư hao mòn phân cấp",
+        "Khớp đường hao mòn cơ sở (tuổi gãy khúc 15/25, số dặm, xi-lanh) trong từng fold train rồi co mượt Bayes phân cấp 4 tầng (Hãng → Hãng|Kiểu → Hãng|Gốc dòng xe → Hãng|Dòng) theo GroupKFold; so trực tiếp với Target Encoding phẳng.",
     ),
     (
         "Tuyến tính theo tham số & Đa thức",

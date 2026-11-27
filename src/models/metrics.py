@@ -39,6 +39,65 @@ def compute_duan_smearing_factor(
     return float(np.exp(np.clip(actual - predicted, -50, 50)).mean())
 
 
+@dataclass(frozen=True, slots=True)
+class BinnedDuanSmearing:
+    """Hiệu chỉnh Duan theo phân vị dự báo (Manning 1998) cho phương sai không đồng nhất."""
+
+    edges: tuple[float, ...]
+    factors: tuple[float, ...]
+    global_factor: float
+
+
+def fit_binned_duan_smearing(
+    y_train_log_true: np.ndarray,
+    y_train_log_pred: np.ndarray,
+    *,
+    n_bins: int = 10,
+    min_bin_samples: int = 30,
+) -> BinnedDuanSmearing:
+    """Học hệ số Duan riêng theo từng phân vị dự báo log chỉ trên phần dư train/OOF."""
+    actual, predicted = _paired_arrays(y_train_log_true, y_train_log_pred)
+    residuals = np.clip(actual - predicted, -50, 50)
+    global_factor = float(np.exp(residuals).mean())
+    if n_bins < 2 or actual.size < 2 * min_bin_samples or np.ptp(predicted) == 0:
+        return BinnedDuanSmearing((), (global_factor,), global_factor)
+    quantiles = np.quantile(predicted, np.linspace(0.0, 1.0, n_bins + 1))
+    interior = np.unique(quantiles[1:-1])
+    if interior.size == 0:
+        return BinnedDuanSmearing((), (global_factor,), global_factor)
+    bins = np.searchsorted(interior, predicted, side="right")
+    factors = []
+    for idx in range(interior.size + 1):
+        mask = bins == idx
+        factors.append(
+            float(np.exp(residuals[mask]).mean())
+            if int(mask.sum()) >= min_bin_samples
+            else global_factor
+        )
+    return BinnedDuanSmearing(
+        edges=tuple(float(v) for v in interior),
+        factors=tuple(factors),
+        global_factor=global_factor,
+    )
+
+
+def inverse_log_transform_binned(
+    y_log_pred: np.ndarray, smearing: BinnedDuanSmearing
+) -> np.ndarray:
+    """Nghịch đảo log sang USD với hệ số Duan tương ứng phân vị dự báo."""
+    predictions = np.asarray(y_log_pred, dtype=np.float64)
+    if not np.isfinite(predictions).all():
+        raise ValueError("Dự báo log phải hữu hạn.")
+    if not smearing.edges:
+        return inverse_log_transform(predictions, smearing.global_factor)
+    edges = np.asarray(smearing.edges, dtype=np.float64)
+    factors = np.asarray(smearing.factors, dtype=np.float64)
+    if not np.isfinite(factors).all() or (factors <= 0).any():
+        raise ValueError("Hệ số Duan theo phân vị phải hữu hạn và dương.")
+    bin_idx = np.searchsorted(edges, predictions, side="right")
+    return np.exp(np.clip(predictions + np.log(factors[bin_idx]), -50, 50))
+
+
 def inverse_log_transform(
     y_log_pred: np.ndarray, smearing_factor: float = 1.0
 ) -> np.ndarray:

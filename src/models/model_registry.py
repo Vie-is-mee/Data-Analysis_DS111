@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from configs.project_config import RANDOM_STATE
-from src.models.metrics import RegressionMetricsReport
+from src.models.metrics import BinnedDuanSmearing, RegressionMetricsReport
 
 
 @dataclass(slots=True)
@@ -36,6 +36,7 @@ class ModelEntry:
     random_state: int = RANDOM_STATE
     train_metrics: RegressionMetricsReport | None = None
     train_log_metrics: RegressionMetricsReport | None = None
+    binned_smearing: BinnedDuanSmearing | None = None
 
 
 class ModelRegistry:
