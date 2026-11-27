@@ -1,6 +1,7 @@
 """Huấn luyện Exp0–Exp4 trên train, chọn bằng CV và mở test sau khi chốt."""
 
 from dataclasses import asdict
+import gc
 from pathlib import Path
 from time import perf_counter
 
@@ -41,6 +42,7 @@ from src.models.split_manifest import (
 )
 
 LINEARIZED_NUMERIC = ("car_age", "log_odometer", "miles_per_year", "cylinders_num")
+LINEARIZED_NUMERIC_QUADRATIC = (*LINEARIZED_NUMERIC, "car_age_squared")
 _RAW_FEATURES = ("year", "odometer")
 _CV_FIELDS = (
     "r2",
@@ -48,6 +50,7 @@ _CV_FIELDS = (
     "ss_res",
     "ss_tot",
     "y_mean_baseline",
+    "mse",
     "rmse",
     "mae",
     "mape_pct",
@@ -272,6 +275,8 @@ class AblationExperimentSuite:
                 log_reports.append(
                     asdict(evaluate_regression(target[holdout], predictions, count))
                 )
+            del estimator, predictions
+            gc.collect()
         usd = pd.DataFrame(usd_reports).loc[:, list(_CV_FIELDS)]
         if log_reports:
             log = pd.DataFrame(log_reports).loc[:, list(_CV_FIELDS)].add_prefix("log_")
@@ -337,6 +342,20 @@ class AblationExperimentSuite:
             pipeline.fit(X, target)
         elapsed = perf_counter() - start
         n_features = len(pipeline["preprocess"].get_feature_names_out())
+        train_prediction = pipeline.predict(X)
+        train_metrics = evaluate_regression(
+            train["price"].to_numpy(),
+            _as_usd(train_prediction, factor),
+            n_features,
+            factor,
+        )
+        train_log = (
+            evaluate_regression(
+                train["log_price"].to_numpy(), train_prediction, n_features
+            )
+            if log_target
+            else None
+        )
         prediction = pipeline.predict(X_val)
         val_metrics = evaluate_regression(
             val["price"].to_numpy(), _as_usd(prediction, factor), n_features, factor
@@ -364,6 +383,8 @@ class AblationExperimentSuite:
             val_log_metrics=val_log,
             dataset_version=self.dataset_version,
             random_state=self.config.random_state,
+            train_metrics=train_metrics,
+            train_log_metrics=train_log,
         )
         self.registry.register(entry)
         return entry
@@ -406,7 +427,7 @@ class AblationExperimentSuite:
             "Exp2_Linearized",
             "OLS",
             LinearRegression(),
-            (*LINEARIZED_NUMERIC, "car_age_squared"),
+            LINEARIZED_NUMERIC_QUADRATIC,
             variant="OLS_AgeSquared",
             notes="Đối chứng bổ sung car_age², giữ mô hình tuyến tính theo hệ số.",
         )
@@ -425,35 +446,35 @@ class AblationExperimentSuite:
             "Exp3A_Naive_Label",
             "OLS",
             LinearRegression(),
-            LINEARIZED_NUMERIC,
+            LINEARIZED_NUMERIC_QUADRATIC,
             strategy="naive_label",
             ordinal=ordinal,
             low=nominal,
             high=high,
-            notes="Mã số từ thứ tự chữ cái, chỉ dùng làm đối chứng.",
+            notes="Mã số từ thứ tự chữ cái (giữ cùng cụm biến số kèm car_age² làm đối chứng).",
         )
         principled = self._fit(
             "Exp3B_Principled_Encoding",
             "OLS",
             LinearRegression(),
-            LINEARIZED_NUMERIC,
+            LINEARIZED_NUMERIC_QUADRATIC,
             strategy="principled_linear",
             ordinal=ordinal,
             low=nominal,
             high=high,
-            notes="Title dùng One-Hot. Condition có thứ bậc và cờ unknown.",
+            notes="Title dùng One-Hot, Condition có thứ bậc + cờ unknown, giữ car_age².",
         )
         title = self._fit(
             "Exp3B_Principled_Encoding",
             "OLS",
             LinearRegression(),
-            LINEARIZED_NUMERIC,
+            LINEARIZED_NUMERIC_QUADRATIC,
             strategy="principled_linear",
             ordinal=(*ordinal, "title_status_clean"),
             low=low,
             high=high,
             variant="OLS_TitleOrdinal",
-            notes="Chỉ thay One-Hot của title bằng thứ bậc giả thuyết để đối chứng.",
+            notes="Chỉ thay One-Hot của title bằng thứ bậc giả thuyết để đối chứng (giữ car_age²).",
         )
         return naive, principled, title
 
@@ -496,20 +517,25 @@ class AblationExperimentSuite:
         entries = []
         low, high = self._nominal_columns()
         for name, estimator in candidates:
-            strategy = (
-                "principled_linear" if name in ("OLS", "Ridge") else "principled_tree"
+            is_linear = name in ("OLS", "Ridge")
+            strategy = "principled_linear" if is_linear else "principled_tree"
+            numeric = LINEARIZED_NUMERIC_QUADRATIC if is_linear else LINEARIZED_NUMERIC
+            note = (
+                "Tuyến tính kèm car_age² trên cùng cột nguồn và các fold train của benchmark."
+                if is_linear
+                else "Dùng cùng cột nguồn và các fold train của benchmark."
             )
             entries.append(
                 self._fit(
                     "Exp4_Benchmark",
                     name,
                     estimator,
-                    LINEARIZED_NUMERIC,
+                    numeric,
                     strategy=strategy,
                     ordinal=("condition_clean",),
                     low=(*low, "title_status_clean"),
                     high=high,
-                    notes="Dùng cùng cột nguồn và các fold train của benchmark.",
+                    notes=note,
                 )
             )
         return entries

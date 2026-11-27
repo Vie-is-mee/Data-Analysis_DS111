@@ -14,9 +14,11 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from matplotlib.ticker import StrMethodFormatter
 import numpy as np
 import pandas as pd
+from scipy.stats import gaussian_kde
 
 from src.models.metrics import evaluate_regression
 from src.models.split_manifest import GROUP_COLUMN, validate_split_manifest
@@ -113,8 +115,202 @@ def segment_errors(data, min_group_n):
     )
 
 
+COMPACT_SUMMARY_COLUMNS = (
+    "model_id",
+    "experiment_stage",
+    "model_name",
+    "target_mode",
+    "train_r2",
+    "cv_r2_mean",
+    "train_cv_r2_gap",
+    "cv_rmse_mean",
+    "cv_mae_mean",
+    "cv_log_r2_mean",
+    "val_r2",
+    "val_rmse",
+    "test_r2",
+    "test_rmse",
+    "test_mae",
+    "train_time_sec",
+)
+
+
+def _plot_distribution(data, out, subtitle):
+    """Biểu đồ phân phối mật độ Thực tế vs Dự báo (Distribution Plot, Bài 05)."""
+    actual = data[ACTUAL].to_numpy(dtype=float)
+    predicted = data[PREDICTED].to_numpy(dtype=float)
+    upper = (
+        float(max(np.quantile(actual, 0.995), np.quantile(predicted, 0.995)))
+        if len(data) >= 50
+        else float(max(actual.max(), predicted.max()))
+    )
+    lower = 0.0
+    if upper <= lower:
+        upper = lower + 1.0
+    grid = np.linspace(lower, upper, 320)
+    med_actual = float(np.median(actual))
+    med_pred = float(np.median(predicted))
+
+    fig, ax = plt.subplots(figsize=(8.8, 5.2), layout="constrained")
+    try:
+        used_kde = False
+        if (
+            len(data) >= 5
+            and np.std(actual) > 0
+            and np.std(predicted) > 0
+        ):
+            try:
+                kde_actual = gaussian_kde(actual)(grid)
+                kde_pred = gaussian_kde(predicted)(grid)
+                ax.plot(
+                    grid,
+                    kde_actual,
+                    color="#1f5a85",
+                    linewidth=2.2,
+                    label=f"Giá rao thực tế (trung vị {med_actual:,.0f} USD)",
+                )
+                ax.fill_between(grid, kde_actual, color="#1f5a85", alpha=0.14)
+                ax.plot(
+                    grid,
+                    kde_pred,
+                    color="#d95f02",
+                    linewidth=2.2,
+                    linestyle="--",
+                    label=f"Giá dự báo (trung vị {med_pred:,.0f} USD)",
+                )
+                ax.fill_between(grid, kde_pred, color="#d95f02", alpha=0.12)
+                used_kde = True
+            except np.linalg.LinAlgError:
+                used_kde = False
+        if not used_kde:
+            bins = min(30, max(5, len(data)))
+            ax.hist(
+                actual,
+                bins=bins,
+                range=(lower, upper),
+                density=True,
+                histtype="step",
+                linewidth=2.0,
+                color="#1f5a85",
+                label=f"Giá rao thực tế (trung vị {med_actual:,.0f} USD)",
+            )
+            ax.hist(
+                predicted,
+                bins=bins,
+                range=(lower, upper),
+                density=True,
+                histtype="step",
+                linewidth=2.0,
+                linestyle="--",
+                color="#d95f02",
+                label=f"Giá dự báo (trung vị {med_pred:,.0f} USD)",
+            )
+        ax.axvline(med_actual, color="#1f5a85", linestyle=":", linewidth=1.2, alpha=0.8)
+        ax.axvline(med_pred, color="#d95f02", linestyle=":", linewidth=1.2, alpha=0.8)
+        clipped = int((actual > upper).sum())
+        note = f" · hiển thị tới P99.5 ({clipped:,} tin đuôi trên)" if clipped > 0 else ""
+        ax.set(
+            xlabel="Giá xe (USD)",
+            ylabel="Mật độ phân phối (KDE)" if used_kde else "Mật độ phân phối",
+            xlim=(lower, upper),
+        )
+        ax.set_title(
+            f"Phân phối giá thực tế và giá dự báo\n{subtitle}{note}",
+            fontsize=11,
+        )
+        ax.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+        ax.grid(axis="y", linestyle=":", alpha=0.35)
+        ax.legend(frameon=True, facecolor="white", framealpha=0.9)
+        fig.savefig(out / "model_distribution_actual_vs_predicted.png", dpi=300)
+    finally:
+        plt.close(fig)
+
+
+def plot_ablation_summary(summary, out, version):
+    """Vẽ đối chứng CV RMSE và Train vs CV R² (kiểm tra Underfit/Overfit)."""
+    if len(summary) < 2 or "cv_rmse_mean" not in summary:
+        return None
+    frame = summary.loc[summary["cv_rmse_mean"].notna()].copy()
+    if len(frame) < 2:
+        return None
+    labels = frame["model_id"].astype(str).tolist()
+    y_pos = np.arange(len(labels))
+    has_train_r2 = "train_r2" in frame and frame["train_r2"].notna().any()
+    has_cv_r2 = "cv_r2_mean" in frame and frame["cv_r2_mean"].notna().any()
+
+    ncols = 2 if has_cv_r2 else 1
+    fig, axes = plt.subplots(
+        1, ncols, figsize=(13.2 if ncols == 2 else 7.6, max(4.6, 0.45 * len(labels) + 1.4)),
+        layout="constrained",
+    )
+    ax_rmse = axes[0] if ncols == 2 else axes
+    try:
+        colors = [
+            "#1b7837"
+            if bool(row.get("test_evaluated", False))
+            else ("#2b6cb0" if row.get("model_family") == "Traditional" else "#d97706")
+            for _, row in frame.iterrows()
+        ]
+        rmses = frame["cv_rmse_mean"].to_numpy(dtype=float)
+        bars = ax_rmse.barh(y_pos, rmses, color=colors, height=0.62)
+        ax_rmse.set_yticks(y_pos, labels)
+        ax_rmse.invert_yaxis()
+        ax_rmse.set(
+            xlabel="CV RMSE (USD) — càng thấp càng tốt",
+            title=f"Đối chứng Exp0–Exp4 ({version})",
+        )
+        ax_rmse.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+        ax_rmse.set_xlim(0, float(rmses.max()) * 1.18)
+        ax_rmse.grid(axis="x", linestyle=":", alpha=0.35)
+        ax_rmse.legend(
+            handles=[
+                Patch(facecolor="#2b6cb0", label="Truyền thống (OLS/Ridge)"),
+                Patch(facecolor="#d97706", label="Cây / Ensemble"),
+                Patch(facecolor="#1b7837", label="Mô hình chốt theo CV"),
+            ],
+            loc="lower right",
+            fontsize=8.2,
+            frameon=True,
+            facecolor="white",
+            framealpha=0.9,
+        )
+        for bar, value in zip(bars, rmses):
+            ax_rmse.text(
+                value + float(rmses.max()) * 0.015,
+                bar.get_y() + bar.get_height() / 2,
+                f"{value:,.0f}",
+                va="center",
+                fontsize=8.5,
+            )
+
+        if ncols == 2:
+            ax_r2 = axes[1]
+            cv_r2 = frame["cv_r2_mean"].to_numpy(dtype=float)
+            if has_train_r2:
+                tr_r2 = frame["train_r2"].to_numpy(dtype=float)
+                h = 0.34
+                ax_r2.barh(y_pos - h / 2, tr_r2, height=h, color="#94a3b8", label="Train R² (USD)")
+                ax_r2.barh(y_pos + h / 2, cv_r2, height=h, color="#0f766e", label="CV R² (USD)")
+                ax_r2.set_title("Chẩn đoán Underfit / Overfit (Train vs CV R²)")
+            else:
+                ax_r2.barh(y_pos, cv_r2, height=0.58, color="#0f766e", label="CV R² (USD)")
+                ax_r2.set_title("Hệ số giải thích CV R² (USD)")
+            ax_r2.axvline(0, color="#aa3439", linestyle="--", linewidth=1)
+            ax_r2.set_yticks(y_pos, [""] * len(labels))
+            ax_r2.invert_yaxis()
+            ax_r2.set_xlabel("R² trên thang giá USD")
+            ax_r2.grid(axis="x", linestyle=":", alpha=0.35)
+            ax_r2.legend(loc="upper right", fontsize=8.5, frameon=True, facecolor="white", framealpha=0.9)
+
+        output_path = out / "model_ablation_comparison.png"
+        fig.savefig(output_path, dpi=300)
+        return output_path
+    finally:
+        plt.close(fig)
+
+
 def plot_errors(data, out, subtitle):
-    """Dùng bin mật độ để biểu diễn tất cả quan sát, kể cả tập test lớn."""
+    """Vẽ phân tán thực tế–dự báo, phần dư và phân phối mật độ (Bài 05)."""
     upper = float(data[[ACTUAL, PREDICTED]].max().max())
     for name, x, y, x_label, y_label in (
         ("model_actual_vs_predicted.png", ACTUAL, PREDICTED, "Giá rao thực tế (USD)", "Giá dự báo (USD)"),
@@ -135,6 +331,7 @@ def plot_errors(data, out, subtitle):
             fig.savefig(out / name, dpi=300)
         finally:
             plt.close(fig)
+    _plot_distribution(data, out, subtitle)
 
 
 def main(argv=None):
@@ -152,9 +349,10 @@ def main(argv=None):
 
     try:
         abt = pd.read_parquet(args.abt)
+        summary = pd.read_csv(args.summary)
         data, winner, metrics = validate_test_predictions(
             abt, pd.read_parquet(args.splits), pd.read_parquet(args.predictions),
-            pd.read_csv(args.summary), version,
+            summary, version,
         )
     except (KeyError, OSError, ValueError) as error:
         parser.error(str(error))
@@ -170,7 +368,13 @@ def main(argv=None):
     segment_errors(data, args.min_group_n).assign(**identity).to_csv(
         args.out / "m3_residual_segments.csv", index=False, encoding="utf-8-sig"
     )
+    compact_cols = [col for col in COMPACT_SUMMARY_COLUMNS if col in summary.columns]
+    if compact_cols:
+        summary[compact_cols].to_csv(
+            args.out / "m3_ablation_compact.csv", index=False, encoding="utf-8-sig"
+        )
     plot_errors(data, args.out, f"{model} · {version} · test n={len(data):,}")
+    plot_ablation_summary(summary, args.out, version)
     hashes = {}
     for name in ("abt", "splits", "predictions", "summary"):
         with getattr(args, name).open("rb") as source:

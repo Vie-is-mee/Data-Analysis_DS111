@@ -12,6 +12,7 @@ class RegressionMetricsReport:
     ss_res: float
     ss_tot: float
     y_mean_baseline: float
+    mse: float
     rmse: float
     mae: float
     mape_pct: float
@@ -83,16 +84,18 @@ def evaluate_regression(
         if nonzero.any()
         else float("nan")
     )
+    mse = ss_res / n_samples
     return RegressionMetricsReport(
-        r2,
-        adj_r2,
-        ss_res,
-        ss_tot,
-        baseline,
-        float(np.sqrt(ss_res / n_samples)),
-        float(np.abs(errors).mean()),
-        mape,
-        n_samples,
-        n_features,
-        smearing_factor,
+        r2=r2,
+        adj_r2=adj_r2,
+        ss_res=ss_res,
+        ss_tot=ss_tot,
+        y_mean_baseline=baseline,
+        mse=float(mse),
+        rmse=float(np.sqrt(mse)),
+        mae=float(np.abs(errors).mean()),
+        mape_pct=mape,
+        n_samples=n_samples,
+        n_features=n_features,
+        smearing_factor=smearing_factor,
     )

@@ -154,8 +154,10 @@ def test_metrics_r2_mean_baseline_and_smearing():
     mean = evaluate_regression(actual, np.full(3, actual.mean()), 1)
     perfect = evaluate_regression(actual, actual, 1)
     assert mean.r2 == 0.0 and mean.ss_res == mean.ss_tot == 200.0
-    assert mean.y_mean_baseline == 20.0 and mean.rmse == pytest.approx(np.sqrt(200 / 3))
-    assert perfect.r2 == 1.0 and perfect.adj_r2 == 1.0 and perfect.mape_pct == 0.0
+    assert mean.y_mean_baseline == 20.0
+    assert mean.mse == pytest.approx(200 / 3)
+    assert mean.rmse == pytest.approx(np.sqrt(200 / 3))
+    assert perfect.r2 == 1.0 and perfect.adj_r2 == 1.0 and perfect.mse == 0.0 and perfect.mape_pct == 0.0
     assert np.isnan(evaluate_regression(actual, actual, 2).adj_r2)
     assert np.isnan(evaluate_regression(np.full(3, 100.1), np.full(3, 100.1), 1).r2)
     pred = np.full(3, 5.0)
@@ -252,12 +254,32 @@ def test_end_to_end_ablation_pipeline_fast(mock_data, tmp_path, monkeypatch):
     }
     for entry in entries:
         assert all(np.isfinite(value) for value in entry.cv_metrics_mean.values())
+        assert "mse" in entry.cv_metrics_mean
+        assert entry.train_metrics is not None
+        assert all(
+            np.isfinite(value)
+            for value in asdict(entry.train_metrics).values()
+            if value is not None
+        )
         assert all(
             np.isfinite(value)
             for value in asdict(entry.val_metrics).values()
             if value is not None
         )
         assert entry.test_metrics is None and entry.y_pred_test is None
+    for linear_id in (
+        "Exp2_OLS_AgeSquared",
+        "Exp3A_OLS",
+        "Exp3B_OLS",
+        "Exp3B_OLS_TitleOrdinal",
+        "Exp4_OLS",
+        "Exp4_Ridge",
+    ):
+        assert "car_age_squared" in registry.get(linear_id).feature_names
+    summary_df = registry.to_summary_dataframe()
+    assert {"train_r2", "train_mse", "train_cv_r2_gap", "cv_train_rmse_gap"}.issubset(
+        summary_df.columns
+    )
     winner = registry.get_best_model()
     assert winner.cv_metrics_mean["rmse"] == min(
         entry.cv_metrics_mean["rmse"] for entry in entries

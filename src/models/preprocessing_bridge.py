@@ -264,7 +264,12 @@ def build_feature_preprocessor(
         drop = "first" if strategy == "principled_linear" else None
         one_hot = make_pipeline(
             FunctionTransformer(_categories, feature_names_out="one-to-one"),
-            OneHotEncoder(drop=drop, handle_unknown="ignore", sparse_output=False),
+            OneHotEncoder(
+                drop=drop,
+                handle_unknown="ignore",
+                sparse_output=False,
+                dtype=np.float32,
+            ),
         )
         target = OutOfFoldTargetEncoder(n_splits=cv_folds, random_state=random_state)
         transformers.extend(

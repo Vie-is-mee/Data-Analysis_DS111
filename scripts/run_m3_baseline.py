@@ -91,7 +91,15 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     print("[5/6] In tổng hợp và lưu bảng kết quả")
     output_config.ensure_output_directories()
     summary = registry.to_summary_dataframe()
-    columns = ["model_id", "cv_rmse_mean", "val_rmse", "val_r2", "test_rmse", "test_r2"]
+    columns = [
+        "model_id",
+        "train_r2",
+        "cv_r2_mean",
+        "cv_rmse_mean",
+        "val_rmse",
+        "test_rmse",
+        "test_r2",
+    ]
     print(summary[columns].round(4).to_string(index=False, na_rep="–"))
     summary.to_csv(
         output_config.models_dir / "ablation_summary.csv", index=False, encoding="utf-8-sig"
