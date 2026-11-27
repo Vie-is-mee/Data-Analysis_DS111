@@ -10,7 +10,9 @@ from src.models.domain_features import (
     WearAdjustedHierarchicalEncoder,
     add_domain_depreciation_features,
     extract_model_stem,
+    extract_model_stem2,
 )
+from src.models.interpretability import export_tv3_interpretability_pack
 from src.models.metrics import (
     compute_duan_smearing_factor,
     evaluate_regression,
@@ -33,6 +35,11 @@ def test_extract_model_stem_and_domain_tokens():
     )
     enriched = add_domain_depreciation_features(frame)
     assert extract_model_stem(frame["model_clean"]).tolist() == ["f150", "crv", "911"]
+    assert extract_model_stem2(frame["model_clean"]).tolist() == [
+        "f150_xlt",
+        "crv_ex",
+        "911_carrera",
+    ]
     assert enriched["age_hinge_15"].tolist() == [0.0, 3.0, 20.0]
     assert enriched["age_hinge_25"].tolist() == [0.0, 0.0, 10.0]
     assert enriched["tok_awd_4wd"].tolist() == [1.0, 0.0, 0.0]
@@ -168,8 +175,30 @@ def test_exp5_runs_with_groups_and_isolates_test(tmp_path):
         "Exp5_Ridge_WearAdjHier",
         "Exp5_LightGBM_FlatOOF",
         "Exp5_LightGBM_WearAdjHier",
+        "Exp5_LightGBM_Huber_Reg",
     ]
     assert entries[1].binned_smearing is not None
     assert entries[3].binned_smearing is not None
+    assert entries[4].binned_smearing is not None
     winner = suite.evaluate_final()
     assert winner.test_metrics is not None and np.isfinite(winner.test_metrics.rmse)
+
+    pack = export_tv3_interpretability_pack(
+        suite.train_data,
+        entries[4],
+        entries[1],
+        tmp_path / "interp",
+        dataset_version="mock-exp5",
+        groups=suite._train_groups,
+        min_model_n=2,
+        cv_folds=3,
+    )
+    for key in (
+        "depreciation_slopes",
+        "intrinsic_model_ranking",
+        "feature_importance_csv",
+        "feature_importance_png",
+        "validation_curve_csv",
+        "validation_curve_png",
+    ):
+        assert pack[key].is_file() and pack[key].stat().st_size > 0

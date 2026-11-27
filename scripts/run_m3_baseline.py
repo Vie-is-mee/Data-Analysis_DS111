@@ -21,6 +21,7 @@ from src.models.feature_ranking import (
     compute_vif_table,
     rank_features_on_common_support,
 )
+from src.models.interpretability import export_tv3_interpretability_pack
 from src.models.workbook_sync import export_experiment_tracking_to_excel
 
 
@@ -111,10 +112,26 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
     ):
         assignments.to_parquet(split_output, engine="pyarrow", index=False)
 
-    print("[6/6] Xuất dự báo test và Workbook TV3")
+    print("[6/6] Xuất dự báo test, diễn giải TV3 và Workbook")
     test = suite.test_data
     registry.export_predictions_for_dashboard(
         winner.model_id, test, output_config.predictions_parquet
+    )
+    ridge_entry = (
+        registry.get("Exp5_Ridge_WearAdjHier")
+        if "Exp5_Ridge_WearAdjHier" in registry.list_ids()
+        else None
+    )
+    export_tv3_interpretability_pack(
+        suite.train_data,
+        winner,
+        ridge_entry,
+        output_config.reports_dir,
+        dataset_version=suite.dataset_version,
+        groups=suite._train_groups,
+        min_model_n=10 if mock else 50,
+        cv_folds=config.cv_folds,
+        random_state=config.random_state,
     )
     workbook = output_config.workbook_xlsx.with_name("Project_Workbook_M3_Tracking.xlsx")
     export_experiment_tracking_to_excel(registry, vif, ranking, workbook)

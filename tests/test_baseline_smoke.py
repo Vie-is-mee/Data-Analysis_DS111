@@ -240,7 +240,7 @@ def test_end_to_end_ablation_pipeline_fast(mock_data, tmp_path, monkeypatch):
         "Exp3A": 1,
         "Exp3B": 2,
         "Exp4": 5,
-        "Exp5": 4,
+        "Exp5": 5,
     }
     assert {
         entry.model_name
@@ -348,7 +348,7 @@ def test_end_to_end_ablation_pipeline_fast(mock_data, tmp_path, monkeypatch):
             assert sheet["A1"].value == number and sheet["A2"].value == "=A1*2"
             assert sheet["A2"].font.bold and "D1:E1" in sheet.merged_cells
             assert str(sheet.data_validations.dataValidation[0].sqref) == "B2:B4"
-        assert book[TRACKING_SHEETS[0]].max_row == 17
+        assert book[TRACKING_SHEETS[0]].max_row == 18
         assert book[TRACKING_SHEETS[1]]["B2"].value == "∞"
         assert book[TRACKING_SHEETS[2]].max_row >= 8
     finally:
