@@ -25,10 +25,20 @@ from configs.project_config import (
     REQUIRED_CLEAN_SCHEMA,
     ProjectConfig,
 )
+from src.models.domain_features import (
+    DOMAIN_HINGE_FEATURES,
+    DOMAIN_TOKEN_FEATURES,
+    FLAT_OOF_FEATURES,
+    WEAR_ADJ_HIER_FEATURES,
+    WearAdjustedHierarchicalEncoder,
+    add_domain_depreciation_features,
+)
 from src.models.metrics import (
     compute_duan_smearing_factor,
     evaluate_regression,
+    fit_binned_duan_smearing,
     inverse_log_transform,
+    inverse_log_transform_binned,
 )
 from src.models.model_registry import ModelEntry, ModelRegistry
 from src.models.preprocessing_bridge import (
@@ -84,8 +94,10 @@ def read_raw_exp0_features(
     return raw
 
 
-def _as_usd(predictions, factor):
+def _as_usd(predictions, factor, binned_smearing=None):
     # OLS giá gốc có thể ngoại suy dưới 0. Áp sàn cố định $1 cho mọi tập.
+    if binned_smearing is not None:
+        return inverse_log_transform_binned(predictions, binned_smearing)
     return (
         inverse_log_transform(predictions, factor)
         if factor is not None
@@ -125,8 +137,9 @@ class AblationExperimentSuite:
             or not data["split_set"].isin(["train", "val", "test"]).all()
         ):
             raise ValueError("Cần listing_id duy nhất và split_set hợp lệ.")
-        self._data = data.sort_values("listing_id").set_index("listing_id", drop=False)
-        self._data["car_age_squared"] = self._data["car_age"].astype(float).pow(2)
+        self._data = add_domain_depreciation_features(
+            data.sort_values("listing_id").set_index("listing_id", drop=False)
+        )
         self._splits = {
             name: self._data.loc[self._data["split_set"].eq(name)]
             for name in ("train", "val", "test")
@@ -249,25 +262,53 @@ class AblationExperimentSuite:
             return self.raw_exp0_features.loc[frame.index, list(columns)]
         return frame.loc[:, list(columns)]
 
-    def _cross_validate(self, prototype, X, target, price, log_target):
+    def _cross_validate(
+        self,
+        prototype,
+        X,
+        target,
+        price,
+        log_target,
+        *,
+        use_domain_groups: bool = False,
+        use_binned_duan: bool = False,
+    ):
         usd_reports, log_reports = [], []
         oof = np.empty(len(X))
         for inner_train, holdout in self._cv.split(X, groups=self._train_groups):
             X_fold = X.iloc[inner_train]
             y_fold = target[inner_train]
-            estimator = clone(prototype).fit(X_fold, y_fold)
+            fit_kwargs = (
+                {"domain_encode__groups": self._train_groups.iloc[inner_train]}
+                if (use_domain_groups and self._train_groups is not None)
+                else {}
+            )
+            estimator = clone(prototype).fit(X_fold, y_fold, **fit_kwargs)
             predictions = estimator.predict(X.iloc[holdout])
             oof[holdout] = predictions
-            factor = (
-                compute_duan_smearing_factor(y_fold, estimator.predict(X_fold))
-                if log_target
+            train_fold_pred = estimator.predict(X_fold) if log_target else None
+            binned = (
+                fit_binned_duan_smearing(y_fold, train_fold_pred)
+                if (log_target and use_binned_duan)
                 else None
+            )
+            factor = (
+                binned.global_factor
+                if binned is not None
+                else (
+                    compute_duan_smearing_factor(y_fold, train_fold_pred)
+                    if log_target
+                    else None
+                )
             )
             count = len(estimator["preprocess"].get_feature_names_out())
             usd_reports.append(
                 asdict(
                     evaluate_regression(
-                        price[holdout], _as_usd(predictions, factor), count, factor
+                        price[holdout],
+                        _as_usd(predictions, factor, binned),
+                        count,
+                        factor,
                     )
                 )
             )
@@ -275,7 +316,7 @@ class AblationExperimentSuite:
                 log_reports.append(
                     asdict(evaluate_regression(target[holdout], predictions, count))
                 )
-            del estimator, predictions
+            del estimator, predictions, train_fold_pred
             gc.collect()
         usd = pd.DataFrame(usd_reports).loc[:, list(_CV_FIELDS)]
         if log_reports:
@@ -299,6 +340,9 @@ class AblationExperimentSuite:
         high=(),
         notes="",
         variant=None,
+        domain_encoder_mode: str | None = None,
+        use_binned_duan: bool = False,
+        encoding_label: str | None = None,
     ) -> ModelEntry:
         if self._final_model_id is not None:
             raise RuntimeError(
@@ -307,7 +351,20 @@ class AblationExperimentSuite:
         model_id = f"{stage.split('_', 1)[0]}_{variant or name}"
         if model_id in self.registry.list_ids():
             raise ValueError(f"Mô hình đã được chạy: {model_id}")
+        encoded_cols = (
+            FLAT_OOF_FEATURES
+            if domain_encoder_mode == "flat_oof"
+            else (
+                WEAR_ADJ_HIER_FEATURES
+                if domain_encoder_mode == "wear_adjusted_hierarchical"
+                else ()
+            )
+        )
         columns = [*numeric, *ordinal, *low, *high]
+        if domain_encoder_mode is not None:
+            columns = list(
+                dict.fromkeys([*columns, *WearAdjustedHierarchicalEncoder.required_columns])
+            )
         refit_cylinders = (
             "cylinders_num" in numeric and "cylinders_was_missing" in self._data
         )
@@ -320,7 +377,7 @@ class AblationExperimentSuite:
         target = train[target_column].to_numpy()
         preprocessor = build_feature_preprocessor(
             strategy,
-            numeric,
+            [*numeric, *encoded_cols],
             ordinal,
             low,
             high,
@@ -328,24 +385,56 @@ class AblationExperimentSuite:
             cv_folds=self.config.cv_folds,
         ).set_output(transform="pandas")
         steps = [("cylinders_mode", CylinderModeImputer())] if refit_cylinders else []
+        if domain_encoder_mode is not None:
+            steps.append(
+                (
+                    "domain_encode",
+                    WearAdjustedHierarchicalEncoder(
+                        mode=domain_encoder_mode,
+                        n_splits=self.config.cv_folds,
+                        random_state=self.config.random_state,
+                    ),
+                )
+            )
         steps.append(("preprocess", preprocessor))
         if isinstance(estimator, LGBMRegressor):
             steps.append(("lightgbm_columns", FunctionTransformer(_lightgbm_frame)))
         steps.append(("regression", estimator))
         pipeline = Pipeline(steps)
+        use_domain_groups = domain_encoder_mode is not None
         start = perf_counter()
         with threadpool_limits(limits=1, user_api="blas"):
             means, deviations, oof = self._cross_validate(
-                pipeline, X, target, train["price"].to_numpy(), log_target
+                pipeline,
+                X,
+                target,
+                train["price"].to_numpy(),
+                log_target,
+                use_domain_groups=use_domain_groups,
+                use_binned_duan=use_binned_duan,
             )
-            factor = compute_duan_smearing_factor(target, oof) if log_target else None
-            pipeline.fit(X, target)
+            binned_smearing = (
+                fit_binned_duan_smearing(target, oof)
+                if (log_target and use_binned_duan)
+                else None
+            )
+            factor = (
+                binned_smearing.global_factor
+                if binned_smearing is not None
+                else (compute_duan_smearing_factor(target, oof) if log_target else None)
+            )
+            fit_kwargs = (
+                {"domain_encode__groups": self._train_groups}
+                if (use_domain_groups and self._train_groups is not None)
+                else {}
+            )
+            pipeline.fit(X, target, **fit_kwargs)
         elapsed = perf_counter() - start
         n_features = len(pipeline["preprocess"].get_feature_names_out())
         train_prediction = pipeline.predict(X)
         train_metrics = evaluate_regression(
             train["price"].to_numpy(),
-            _as_usd(train_prediction, factor),
+            _as_usd(train_prediction, factor, binned_smearing),
             n_features,
             factor,
         )
@@ -358,7 +447,10 @@ class AblationExperimentSuite:
         )
         prediction = pipeline.predict(X_val)
         val_metrics = evaluate_regression(
-            val["price"].to_numpy(), _as_usd(prediction, factor), n_features, factor
+            val["price"].to_numpy(),
+            _as_usd(prediction, factor, binned_smearing),
+            n_features,
+            factor,
         )
         val_log = (
             evaluate_regression(val["log_price"].to_numpy(), prediction, n_features)
@@ -369,9 +461,11 @@ class AblationExperimentSuite:
             model_id=model_id,
             experiment_stage=stage,
             model_name=name,
-            model_family="Traditional" if name in ("OLS", "Ridge") else "Tree_Ensemble",
+            model_family=(
+                "Traditional" if name.startswith(("OLS", "Ridge")) else "Tree_Ensemble"
+            ),
             target_mode="log_price" if log_target else "raw_price",
-            encoding_strategy=strategy,
+            encoding_strategy=encoding_label or strategy,
             feature_names=columns,
             hyperparams=estimator.get_params(),
             cv_metrics_mean=means,
@@ -385,6 +479,7 @@ class AblationExperimentSuite:
             random_state=self.config.random_state,
             train_metrics=train_metrics,
             train_log_metrics=train_log,
+            binned_smearing=binned_smearing,
         )
         self.registry.register(entry)
         return entry
@@ -540,13 +635,101 @@ class AblationExperimentSuite:
             )
         return entries
 
-    def run_all(self) -> ModelRegistry:
+    def run_exp5_domain_innovation(self):
+        """Đối chứng 2×2: Target Encoding phẳng vs Phần dư hao mòn phân cấp (Group-OOF + Binned Duan)."""
+        seed = self.config.random_state
+        jobs = 1 if self.fast_mode else -1
+        low, high = self._nominal_columns()
+        nominal = (*low, "title_status_clean")
+        lin_numeric = (
+            *LINEARIZED_NUMERIC_QUADRATIC,
+            *DOMAIN_HINGE_FEATURES,
+            *DOMAIN_TOKEN_FEATURES,
+        )
+        tree_numeric = (
+            *LINEARIZED_NUMERIC,
+            *DOMAIN_HINGE_FEATURES,
+            *DOMAIN_TOKEN_FEATURES,
+        )
+        lgb_params = dict(
+            n_estimators=40 if self.fast_mode else 300,
+            learning_rate=0.05,
+            num_leaves=31,
+            max_depth=10,
+            min_child_samples=30,
+            n_jobs=jobs,
+            random_state=seed,
+            verbosity=-1,
+        )
+        specs = (
+            (
+                "Ridge_FlatOOF",
+                Ridge(alpha=1.0),
+                lin_numeric,
+                "principled_linear",
+                "flat_oof",
+                False,
+                "flat_oof_model_region",
+                "Đối chứng: Ridge + khấu hao gãy khúc/cờ phiên bản + Target Encoding phẳng (model, region).",
+            ),
+            (
+                "Ridge_WearAdjHier",
+                Ridge(alpha=1.0),
+                lin_numeric,
+                "principled_linear",
+                "wear_adjusted_hierarchical",
+                True,
+                "wear_adj_hierarchical",
+                "Đề xuất TV3: Ridge + tách phần dư hao mòn phân cấp 4 tầng (Group-OOF) + Duan theo phân vị.",
+            ),
+            (
+                "LightGBM_FlatOOF",
+                LGBMRegressor(**lgb_params),
+                tree_numeric,
+                "principled_tree",
+                "flat_oof",
+                False,
+                "flat_oof_model_region",
+                "Đối chứng: LightGBM + khấu hao gãy khúc/cờ phiên bản + Target Encoding phẳng (model, region).",
+            ),
+            (
+                "LightGBM_WearAdjHier",
+                LGBMRegressor(**lgb_params),
+                tree_numeric,
+                "principled_tree",
+                "wear_adjusted_hierarchical",
+                True,
+                "wear_adj_hierarchical",
+                "Đề xuất TV3: LightGBM + tách phần dư hao mòn phân cấp 4 tầng (Group-OOF) + Duan theo phân vị.",
+            ),
+        )
+        return [
+            self._fit(
+                "Exp5_Domain_Innovation",
+                name,
+                estimator,
+                numeric,
+                strategy=strategy,
+                ordinal=("condition_clean",),
+                low=nominal,
+                high=high,
+                notes=note,
+                domain_encoder_mode=enc_mode,
+                use_binned_duan=binned,
+                encoding_label=enc_label,
+            )
+            for name, estimator, numeric, strategy, enc_mode, binned, enc_label, note in specs
+        ]
+
+    def run_all(self, *, include_exp5: bool = True) -> ModelRegistry:
         """Chạy toàn bộ chuỗi và trả kết quả CV/validation."""
         self.run_exp0_raw_minimal_ols()
         self.run_exp1_cleaned_age_ols()
         self.run_exp2_linearized_log_price_ols()
         self.run_exp3_encoding_comparison()
         self.run_exp4_multimodel_benchmark()
+        if include_exp5:
+            self.run_exp5_domain_innovation()
         return self.registry
 
     def evaluate_final(self) -> ModelEntry:
@@ -559,7 +742,7 @@ class AblationExperimentSuite:
         prediction = winner.fitted_pipeline.predict(X)
         factor = winner.val_metrics.smearing_factor
         count = winner.val_metrics.n_features
-        usd = _as_usd(prediction, factor)
+        usd = _as_usd(prediction, factor, winner.binned_smearing)
         winner.test_metrics = evaluate_regression(
             test["price"].to_numpy(), usd, count, factor
         )

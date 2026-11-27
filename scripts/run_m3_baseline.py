@@ -84,7 +84,7 @@ def main(argv=None, *, config: ProjectConfig = CONFIG) -> int:
         vif = compute_vif_table(train, ["year", "posting_year", *LINEARIZED_NUMERIC])
         ranking = rank_features_on_common_support(train, list(LINEARIZED_NUMERIC))
 
-    print("[4/6] Chạy Exp0–Exp4 và khóa mô hình theo CV USD")
+    print("[4/6] Chạy Exp0–Exp5 và khóa mô hình theo CV USD")
     registry = suite.run_all()
     winner = suite.evaluate_final()
 

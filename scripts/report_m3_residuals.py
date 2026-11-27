@@ -255,9 +255,11 @@ def plot_ablation_summary(summary, out, version):
         bars = ax_rmse.barh(y_pos, rmses, color=colors, height=0.62)
         ax_rmse.set_yticks(y_pos, labels)
         ax_rmse.invert_yaxis()
+        stages = [str(s).split("_", 1)[0] for s in frame.get("experiment_stage", []) if pd.notna(s)]
+        stage_span = f"{stages[0]}–{stages[-1]}" if len(stages) >= 2 else "các mô hình"
         ax_rmse.set(
             xlabel="CV RMSE (USD) — càng thấp càng tốt",
-            title=f"Đối chứng Exp0–Exp4 ({version})",
+            title=f"Đối chứng {stage_span} ({version})",
         )
         ax_rmse.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
         ax_rmse.set_xlim(0, float(rmses.max()) * 1.18)
