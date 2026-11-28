@@ -26,16 +26,19 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from scipy import stats
 
 from configs.project_config import (
+    CONDITION_ORDINAL,
     CONFIG,
     HIGH_CARDINALITY_CATEGORICAL,
     LOW_CARDINALITY_CATEGORICAL,
     REQUIRED_CLEAN_SCHEMA,
+    TITLE_STATUS_ORDINAL_EXPERIMENTAL,
 )
+from src.analysis.correlation_engine import correlate_pairs
+from src.analysis.eda_summary import vn_number
 from src.core.formula_store import FormulaStore
-from src.data import formatter, selector
+from src.data import formatter, missing_handler, selector
 from src.data.pipeline_m1 import DEFAULT_LOG, DEFAULT_STORE, DEFAULT_VIN_REPORT
 
 M1_SHEETS = (
@@ -58,7 +61,9 @@ MISSING_METHODS: list[tuple[str, str, str, str]] = [
     ("odometer", "Xóa dòng; xóa cả dòng đồng hồ hỏng/quay vòng",
      "Điền theo nhóm là học từ dữ liệu trước khi chia tập; số dặm tự báo sai không tin cậy",
      "Bài 2 · Xóa dòng"),
-    ("manufacturer", "Cứu từ title, còn lại → 'unknown'; lưu nguồn ở manufacturer_source, "
+    ("manufacturer", "Cứu từ title, rồi từ đầu cột model (gồm hãng xe tải/bus thương mại, hãng cổ, "
+     "sửa lỗi chính tả), rồi suy từ tên dòng xe chỉ thuộc một hãng; còn lại → "
+     "'unknown'; lưu nguồn ở manufacturer_source, "
      "gắn cờ manufacturer_title_conflict khi hãng gốc ≠ hãng trong title",
      "Thiếu không ngẫu nhiên: hãng ngoài danh sách 42 hãng của Craigslist",
      "Bài 2 · Tạo đặc trưng từ chuỗi + giá trị cố định"),
@@ -183,22 +188,89 @@ def build_sheet05(clean: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+# Bảng nhãn chuẩn (M1-08): cột phân loại → mã Ordinal nếu có thứ tự (None = không thứ tự).
+LABEL_COLUMNS: dict[str, dict[str, int] | None] = {
+    "condition_clean": dict(CONDITION_ORDINAL),
+    "title_status_clean": dict(TITLE_STATUS_ORDINAL_EXPERIMENTAL),
+    "year_era": {"Classic": 0, "Old": 1, "Mid": 2, "Modern": 3},
+    "fuel": None, "transmission": None, "drive": None, "type": None,
+    "seller_type": None, "manufacturer_clean": None,
+}
+RARE_SHARE = 0.001  # nhãn < 0,1% số dòng → nhắc TV3 (One-Hot có thể ra cột gần như toàn 0)
+
+
+def _merged_from(col: str) -> dict[str, str]:
+    """Nhãn chuẩn → các cách viết gốc đã gộp vào (lấy thẳng từ luật trong code)."""
+    sources: dict[str, dict[str, str]] = {
+        "manufacturer_clean": formatter.MANUFACTURER_ALIASES | missing_handler.MISSPELLED_BRANDS,
+        "seller_type": {"owner": "private"},
+    }
+    merged: dict[str, list[str]] = {}
+    for raw, std in sources.get(col, {}).items():
+        merged.setdefault(std, []).append(raw)
+    return {k: ", ".join(sorted(v)) for k, v in merged.items()}
+
+
+def build_label_table(clean: pd.DataFrame) -> pd.DataFrame:
+    """Mỗi nhãn chuẩn: mã Ordinal (nếu có), số dòng, %, số dòng train, nhãn gốc được gộp vào."""
+    rows = []
+    train = clean["split_set"].eq("train") if "split_set" in clean else pd.Series(True, index=clean.index)
+    for col, codes in LABEL_COLUMNS.items():
+        if col not in clean.columns:
+            continue
+        counts = clean[col].value_counts()
+        n_train = clean.loc[train, col].value_counts()
+        merged = _merged_from(col)
+        order = sorted(counts.index, key=lambda v: (codes.get(v, 99) if codes else 0, -counts[v]))
+        for label in order:
+            share = counts[label] / len(clean)
+            code = codes.get(label) if codes else None
+            note = "Khuyết hoặc nhãn ngoài miền hợp đồng" if label == "unknown" else ""
+            if codes is not None and code is None:
+                note += " → không gán thứ tự, mã hóa riêng (cờ / One-Hot)"
+            if share < RARE_SHARE:
+                note = (note + "; " if note else "") + "Nhãn hiếm (<0,1%)"
+            rows.append({"Cột": col, "Nhãn chuẩn": label,
+                         "Mã Ordinal": "" if code is None else int(code),
+                         "Số dòng": int(counts[label]), "% dòng": round(share * 100, 2),
+                         "Số dòng train": int(n_train.get(label, 0)),
+                         "Gộp từ nhãn gốc": merged.get(label, ""), "Ghi chú": note})
+    return pd.DataFrame(rows)
+
+
+def build_sheet06(clean: pd.DataFrame) -> dict[str, object]:
     dictionary = pd.DataFrame([
         {"Cột": c, "Kiểu": t, "Vai trò": COLUMN_ROLES.get(c, "Đặc trưng"),
          "Số giá trị khác nhau": int(clean[c].nunique())}
         for c, t in (dict(REQUIRED_CLEAN_SCHEMA) | selector.EXTRA_COLUMNS).items() if c in clean.columns
     ])
+    # Dùng chung bộ máy tương quan của TV2 (src.analysis.correlation_engine) để số trong
+    # Workbook trùng với báo cáo EDA: cùng cách bỏ NaN, cùng KTC Fisher, cùng gợi ý phương pháp.
     cols = NUMERIC_FEATURES + ["log_price"]
-    target_corr = []
-    for c in NUMERIC_FEATURES:
-        r, p_r = stats.pearsonr(clean[c], clean["log_price"])
-        rho, p_s = stats.spearmanr(clean[c], clean["log_price"])
-        target_corr.append({"Biến": c, "Pearson r": round(r, 4), "p (Pearson)": p_r,
-                            "Spearman ρ": round(rho, 4), "p (Spearman)": p_s, "n": len(clean)})
-    matrix = clean[cols].corr(method="pearson").round(3).reset_index().rename(columns={"index": "Biến"})
-    vif = selector.vif_report(clean)
-    return dictionary, pd.DataFrame(target_corr), matrix, vif
+    target = correlate_pairs(clean, [(c, "log_price") for c in NUMERIC_FEATURES])
+    target_corr = pd.DataFrame({
+        "Biến": target["x"], "Pearson r": target["pearson_r"].round(4), "p (Pearson)": target["pearson_p"],
+        "KTC 95% Pearson": [f"[{lo:.3f}; {hi:.3f}]" for lo, hi in
+                            zip(target["pearson_ci_low"], target["pearson_ci_high"])],
+        "Spearman ρ": target["spearman_rho"].round(4), "p (Spearman)": target["spearman_p"],
+        "Nên dùng (TV2)": target["recommended_method"], "n": target["n_samples"],
+    })
+    pairs = [(a, b) for i, a in enumerate(cols) for b in cols[i + 1:]]
+    long = correlate_pairs(clean, pairs)
+    matrix = pd.DataFrame(np.eye(len(cols)), index=cols, columns=cols)
+    for a, b, r in zip(long["x"], long["y"], long["pearson_r"]):
+        matrix.loc[a, b] = matrix.loc[b, a] = r
+    matrix = matrix.round(3).rename_axis("Biến").reset_index()
+    decisions, vif, vif_notes = selector.selection_evidence(clean)
+    return {"dictionary": dictionary, "target_corr": target_corr, "matrix": matrix,
+            "decisions": decisions, "vif": vif, "vif_notes": vif_notes}
+
+
+def _write_notes(ws, row: int, notes: list[str]) -> int:
+    """Ghi từng câu diễn giải một dòng ở cột A; trả về dòng trống kế tiếp."""
+    for i, text in enumerate(notes):
+        ws.cell(row + i, 1, f"• {text}")
+    return row + len(notes) + 1
 
 
 def build_sheet07(clean: pd.DataFrame, raw: pd.DataFrame | None, n: int = SAMPLE_SIZE) -> pd.DataFrame:
@@ -289,16 +361,50 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
     r = _write_table(ws, build_sheet05(clean), r)
     ws.cell(r, 1, "Nhánh chính (theo slide Bài 2): One-Hot cho biến không thứ tự, Ordinal cho condition; "
                   "Label Encoding chỉ làm đối chứng. TV3 fit encoder trên train trong pipeline (Exp3A/3B).")
+    r = _write_title(ws, r + 2, "Bảng nhãn chuẩn — miền giá trị sau chuẩn hóa, mã Ordinal và nhãn gốc đã gộp")
+    r = _write_table(ws, build_label_table(clean), r)
+    ws.cell(r, 1, "Chuẩn hóa chung: chữ thường, bỏ khoảng trắng thừa, rỗng → 'unknown'. "
+                  "Mã title_status chỉ là thứ tự thực nghiệm (đối chứng One-Hot ở Exp 3). "
+                  "state (51 mã bang) giữ nguyên mã viết thường nên không liệt kê.")
 
-    dictionary, target_corr, matrix, vif = build_sheet06(clean)
+    s06 = build_sheet06(clean)
     ws = book["06_Selection"]
     r = _write_title(ws, 1, "Từ điển cột bàn giao (22 cột hợp đồng + cột cờ bổ sung)")
-    r = _write_table(ws, dictionary, r)
-    r = _write_title(ws, r, "Tương quan với log_price (Bài 4: Pearson/Spearman kèm p-value)")
+    r = _write_table(ws, s06["dictionary"], r)
+    r = _write_title(ws, r, "Quyết định chọn biến (M1-10) — đề xuất của TV1, tính trên tập train")
+    decisions, d_start = s06["decisions"], r
+    r = _write_table(ws, decisions, r, max_width=90)
+    evidence_col = decisions.columns.get_loc("Bằng chứng định lượng") + 1
+    for (cell,) in ws.iter_rows(min_row=d_start + 1, max_row=d_start + len(decisions),
+                                min_col=evidence_col, max_col=evidence_col):
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    r = _write_notes(ws, r - 1, [
+        "Giữ = đưa vào mô hình; Bỏ = không đưa vào (có lý do định lượng); Thử = TV3 quyết bằng CV; "
+        "Mục tiêu = biến cần dự báo.",
+        "Thước đo: r² = Pearson r bình phương (biến số); ω² = η² hiệu chỉnh theo số nhãn (biến phân loại, "
+        "bộ máy TV2); R² tăng thêm = R² OLS khi thêm biến trừ R² khi chưa thêm (Bài 5).",
+        f"Ngưỡng kinh nghiệm: |r| ≥ {vn_number(selector.DUPLICATE_R, 2)} → trùng thông tin; "
+        f"< {vn_number(selector.MIN_SHARE * 100)}% phương sai → yếu; R² tăng < "
+        f"{vn_number(selector.MIN_GAIN * 100, 1)} điểm % → đóng góp nhỏ; "
+        f"> {vn_number(selector.MAX_ONEHOT_LEVELS)} nhãn → không One-Hot.",
+    ])
+    r = _write_title(ws, r, "VIF theo từng bộ biến — phần mở rộng ngoài slide (> 5 cảnh báo, > 10 nghiêm trọng)")
+    r = _write_table(ws, s06["vif"], r)
+    r = _write_notes(ws, r - 1, s06["vif_notes"])
+    target_corr = s06["target_corr"]
+    r = _write_title(ws, r, "Tương quan với log_price (Bài 4: Pearson/Spearman kèm p-value) — toàn ABT")
     r = _write_table(ws, target_corr, r)
+    n = int(target_corr["n"].max()) if len(target_corr) else 0
+    r = _write_notes(ws, r - 1, [
+        f"p ≈ 0 ở hầu hết các biến vì n = {vn_number(n)} dòng: mẫu lớn thì r nhỏ vẫn có ý nghĩa thống kê, "
+        "nên đọc độ lớn r/ρ và KTC 95% chứ không chỉ p (Bài 4).",
+        "Cột 'Nên dùng (TV2)': Spearman khi |ρ| − |r| > 0,10 hoặc |skew| > 1, ngược lại Pearson. "
+        "car_age² có Spearman trùng car_age vì car_age ≥ 0 nên bình phương giữ nguyên thứ hạng.",
+    ])
+    matrix = s06["matrix"]
     r = _write_title(ws, r, "Ma trận tương quan Pearson (tô màu như heatmap)")
     m_start = r
-    r = _write_table(ws, matrix, r)
+    _write_table(ws, matrix, r)
     first, last = get_column_letter(2), get_column_letter(matrix.shape[1])
     ws.conditional_formatting.add(
         f"{first}{m_start + 1}:{last}{m_start + len(matrix)}",
@@ -306,8 +412,6 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
                        mid_type="num", mid_value=0, mid_color="FFFFFF",
                        end_type="num", end_value=1, end_color="F8696B"),
     )
-    r = _write_title(ws, r, "VIF — phần mở rộng ngoài slide (> 5 cảnh báo, > 10 nghiêm trọng)")
-    _write_table(ws, vif, r)
 
     ws = book["07_Sample_Comparison"]
     r = _write_title(ws, 1, f"Đối chiếu {SAMPLE_SIZE} listing_id cố định (seed {CONFIG.random_state}) trước/sau làm sạch")

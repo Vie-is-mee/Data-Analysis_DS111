@@ -109,6 +109,80 @@ def filter_ranges(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     return out
 
 
+# Giá giữ chỗ dạng chuỗi số liên tiếp (TV3 28/11: nằm ở đuôi 100k–150k, đẩy MSE lên).
+PLACEHOLDER_PRICES: frozenset[float] = frozenset({123456.0})
+# model là quảng cáo chung của bãi xe ('all makes and models', 'cars for sale'...),
+# không mô tả một chiếc xe cụ thể → không định giá được.
+SPAM_MODEL_PATTERN = (r"\ball makes?\b|\bany makes?\b|\ball types\b|"
+                      r"\bcars for sale\b|\bpublic auto auction\b")
+
+
+def filter_fake_listings(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
+    """Tầng 1b: loại tin giá ảo/tin rác mà lọc miền không bắt được (yêu cầu TV3 28/11).
+
+    Chạy TRƯỚC khi xuất danh sách VIN, nên đổi luật ở đây thì phải gửi lại
+    vin_candidates cho TV3 khóa manifest mới.
+    """
+    rules = (
+        ("Lọc giá giữ chỗ 123456", "Giá là dãy số liên tiếp, không phải giá bán thật",
+         lambda d: ~d["price"].isin(PLACEHOLDER_PRICES)),
+        ("Lọc price == odometer", "Hai trường trùng khớp tuyệt đối → một trong hai bị nhập nhầm",
+         lambda d: d["price"].ne(d["odometer"])),
+        ("Lọc tin quảng cáo chung (model rác)",
+         "model kiểu 'all makes and models', 'cars for sale' không mô tả một xe cụ thể",
+         lambda d: ~d["model_clean"].str.contains(SPAM_MODEL_PATTERN, regex=True).fillna(False)),
+    )
+    out = df
+    for step, reason, keep in rules:
+        before = out
+        out = out[keep(out).to_numpy(dtype=bool)]
+        log.record("03_format", SHEET, step, reason, before, out)
+    return out
+
+
+# TV3 chốt 28/11 · nhóm 5: RV, rơ-moóc, xe máy/ATV, xe golf, food truck, thuyền, máy công trình.
+NON_CAR_PATTERN = (
+    r"\b(?:keystone|winnebago|jayco|forest river|coachmen|coachman|airstream|thor|tiffin|newmar|"
+    r"heartland|grand design|holiday rambler|dutchmen|gulf stream|four winds|fleetwood|"
+    r"rvs?|campers?|motorhomes?|motor home|mobile home|travel trailer|fifth wheel|5th wheel|"
+    r"toy hauler|trailers?|trailor|car hauler|great dane|wabash|dry van|"
+    r"yamaha|polaris|kawasaki|can am|canam|ducati|ktm|ninja|atvs?|utvs?|side by side|dirt bike|"
+    r"motorcycles?|scooter|moped|dune buggy|sand rail|go kart|mini bike|"
+    r"golf carts?|club car|ez go|ezgo|cushman|food truck|food trailer|concession|boats?|pontoon|"
+    r"jet skis?|forklift|skid steer|excavator|john deere|kubota|massey ferguson|kalmar)\b"
+)
+# Chỉ xét dòng chưa xác định được hãng từ tên hãng: 'none' hoặc hãng chỉ suy từ tên model
+# ('charger bass boat' → dodge). Ô tô có hãng rõ mà nhắc 'trailer hitch' không bị đụng tới.
+NON_CAR_SCOPE: frozenset[str] = frozenset({"none", "model_name"})
+
+
+# 'f150 ... trade for motorhome', 'f650 with available trailers': từ khóa sau 'trade for' (thứ
+# người bán muốn đổi lấy) hoặc 'with/and trailer' (đồ bán kèm) không mô tả chiếc xe đang rao
+# → bỏ các cụm này trước khi so khớp.
+TRADE_PHRASE = (r"\btrades?\s+(?:for|4)\s+(?:an?\s+)?\w+(?:\s+\w+)?|"
+                r"\b(?:with|and|plus|w)\s+(?:an?\s+|available\s+)?trailers?\b")
+
+
+def _words(values: pd.Series) -> pd.Series:
+    return values.astype("string").fillna("").str.lower().str.replace(r"[^a-z0-9]+", " ", regex=True)
+
+
+def filter_non_car(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
+    """Loại tin không phải ô tô (yêu cầu TV3 28/11), chạy trước khi xuất danh sách VIN."""
+    text = _words(df["model"]) if "model" in df else pd.Series("", index=df.index, dtype="string")
+    if "title" in df:
+        text = _words(df["title"]) + " | " + text
+    text = text.str.replace(TRADE_PHRASE, " ", regex=True)
+    source = (df["manufacturer_source"] if "manufacturer_source" in df
+              else df["manufacturer_clean"].eq("unknown").map({True: "none", False: "original"}))
+    non_car = source.isin(NON_CAR_SCOPE) & text.str.contains(NON_CAR_PATTERN, regex=True)
+    out = df[~non_car.to_numpy(dtype=bool)]
+    log.record("03_format", SHEET, "Loại ngoài phạm vi định giá ô tô",
+               "Dòng chưa rõ hãng có từ khóa RV/rơ-moóc/xe máy/ATV/xe golf/food truck/thuyền/máy "
+               "công trình ở title hoặc model", df, out)
+    return out
+
+
 def flag_price_outliers(df: pd.DataFrame, log: TransformLog, k: float = 1.5,
                         min_group: int = 30) -> pd.DataFrame:
     """Tầng 2: GẮN CỜ giá ngoại lệ theo IQR trong từng hãng (Bài 4 · Boxplot).
@@ -191,6 +265,8 @@ def run(df: pd.DataFrame, log: TransformLog) -> pd.DataFrame:
     df = standardize_labels(df, log)
     df = parse_dates(df, log)
     df = filter_ranges(df, log)
+    df = filter_fake_listings(df, log)
+    df = filter_non_car(df, log)
     # Gộp tin đăng lại theo VIN: KHÔNG làm ở đây. Theo DATA_CONTRACT 1.1, TV3 quyết định
     # bằng src.core.vin_reposts (chữ số kiểm tra 49 CFR 565.15) từ danh sách VIN mà
     # pipeline xuất SAU bước này; pipeline lọc lại theo manifest (xem pipeline_m1).

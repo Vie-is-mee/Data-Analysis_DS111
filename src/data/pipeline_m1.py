@@ -31,6 +31,9 @@ DEFAULT_STORE = CONFIG.clean_parquet.with_name("formula_store_v1.joblib")
 DEFAULT_LOG = CONFIG.clean_parquet.with_name("m1_transform_log.csv")
 DEFAULT_VIN = CONFIG.clean_parquet.with_name("vin_candidates_local.parquet")  # nội bộ, không lên Git
 DEFAULT_VIN_REPORT = CONFIG.clean_parquet.with_name("m1_vin_report.csv")
+# CSV mỏng 3 cột từ file gốc cho Exp0 của TV3 (ghép theo id, không cần vehicles.csv 1,1 GB).
+DEFAULT_EXP0_RAW = CONFIG.clean_parquet.with_name("vehicles_exp0_thin.csv")
+EXP0_RAW_COLUMNS: tuple[str, ...] = ("id", "year", "odometer")
 MIN_ROWS_TARGET = 200_000  # mục tiêu số dòng sạch (M1-06, rủi ro R1)
 
 
@@ -53,7 +56,11 @@ def vin_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def vin_report(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
-    """Số dòng + giá trung vị trước/sau gộp tin đăng lại, theo loại người bán (hợp đồng 1.1)."""
+    """Số dòng + giá trung vị trước/sau gộp tin đăng lại, theo loại người bán (hợp đồng 1.1).
+
+    Thêm năm model và odometer trung vị (ngoài yêu cầu hợp đồng) để thấy việc gộp có làm
+    lệch cơ cấu xe hay không, không chỉ lệch giá.
+    """
     groups = [(k, before[before["seller_type"] == k], after[after["seller_type"] == k])
               for k in sorted(before["seller_type"].unique())]
     rows = []
@@ -62,7 +69,11 @@ def vin_report(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
         rows.append({"seller_type": name, "Số dòng trước": len(b), "Số dòng sau": len(a),
                      "Bị gộp": removed, "% bị gộp": round(removed / max(len(b), 1) * 100, 2),
                      "Giá trung vị trước": float(b["price"].median()),
-                     "Giá trung vị sau": float(a["price"].median())})
+                     "Giá trung vị sau": float(a["price"].median()),
+                     "Năm trung vị trước": float(b["year"].median()),
+                     "Năm trung vị sau": float(a["year"].median()),
+                     "Odometer trung vị trước": float(b["odometer"].median()),
+                     "Odometer trung vị sau": float(a["odometer"].median())})
     return pd.DataFrame(rows)
 
 
@@ -138,17 +149,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--vin-out", type=Path, default=DEFAULT_VIN,
                    help="Danh sách VIN nội bộ cho split_manifest của TV3 (không lên Git)")
     p.add_argument("--vin-report", type=Path, default=DEFAULT_VIN_REPORT)
+    p.add_argument("--exp0-raw-out", type=Path, default=DEFAULT_EXP0_RAW,
+                   help="CSV mỏng id/year/odometer nguyên gốc cho Exp0 (TV3 --raw-csv)")
     p.add_argument("--split-manifest", type=Path, default=None,
                    help="Manifest TV3: lọc tin đăng lại + lấy split_set")
     args = p.parse_args(argv)
 
     manifest = pd.read_parquet(args.split_manifest) if args.split_manifest else None
-    result = build_clean_dataset(load_raw(args.raw), split_manifest=manifest)
+    raw = load_raw(args.raw)
+    # Giá trị nguyên văn (chuỗi) như vehicles.csv: Exp0 đo mô hình trên dữ liệu CHƯA làm sạch.
+    args.exp0_raw_out.parent.mkdir(parents=True, exist_ok=True)
+    # id trùng: giữ dòng đầu như formatter.drop_duplicate_ids (TV3 yêu cầu id duy nhất).
+    exp0 = raw.loc[:, list(EXP0_RAW_COLUMNS)].drop_duplicates("id", keep="first")
+    exp0.to_csv(args.exp0_raw_out, index=False, encoding="utf-8")
+    result = build_clean_dataset(raw, split_manifest=manifest)
     save(result, args.out, args.store, args.log, args.vin_out, args.vin_report)
     raw_rows = result.log.to_dataframe()["rows_before"].iloc[0]
     print(f"Giữ {len(result.data):,}/{raw_rows:,} dòng "
           f"({len(result.data) / raw_rows:.1%}); {result.store.formula_count} công thức")
-    print(f"→ {args.out}\n→ {args.store}\n→ {args.log}\n→ {args.vin_out} (nội bộ)")
+    print(f"→ {args.out}\n→ {args.store}\n→ {args.log}\n→ {args.vin_out} (nội bộ)"
+          f"\n→ {args.exp0_raw_out} (Exp0, {len(exp0):,} dòng)")
     if result.vin_report is not None:
         print(result.vin_report.to_string(index=False))
     return 0
