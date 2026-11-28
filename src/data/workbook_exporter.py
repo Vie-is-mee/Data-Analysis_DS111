@@ -26,7 +26,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from scipy import stats
 
 from configs.project_config import (
     CONDITION_ORDINAL,
@@ -36,8 +35,9 @@ from configs.project_config import (
     REQUIRED_CLEAN_SCHEMA,
     TITLE_STATUS_ORDINAL_EXPERIMENTAL,
 )
+from src.analysis.correlation_engine import correlate_pairs
 from src.core.formula_store import FormulaStore
-from src.data import formatter, selector
+from src.data import formatter, missing_handler, selector
 from src.data.pipeline_m1 import DEFAULT_LOG, DEFAULT_STORE, DEFAULT_VIN_REPORT
 
 M1_SHEETS = (
@@ -60,7 +60,9 @@ MISSING_METHODS: list[tuple[str, str, str, str]] = [
     ("odometer", "Xóa dòng; xóa cả dòng đồng hồ hỏng/quay vòng",
      "Điền theo nhóm là học từ dữ liệu trước khi chia tập; số dặm tự báo sai không tin cậy",
      "Bài 2 · Xóa dòng"),
-    ("manufacturer", "Cứu từ title, còn lại → 'unknown'; lưu nguồn ở manufacturer_source, "
+    ("manufacturer", "Cứu từ title, rồi từ đầu cột model (gồm hãng xe tải/bus thương mại, hãng cổ, "
+     "sửa lỗi chính tả), rồi suy từ tên dòng xe chỉ thuộc một hãng; còn lại → "
+     "'unknown'; lưu nguồn ở manufacturer_source, "
      "gắn cờ manufacturer_title_conflict khi hãng gốc ≠ hãng trong title",
      "Thiếu không ngẫu nhiên: hãng ngoài danh sách 42 hãng của Craigslist",
      "Bài 2 · Tạo đặc trưng từ chuỗi + giá trị cố định"),
@@ -199,7 +201,7 @@ RARE_SHARE = 0.001  # nhãn < 0,1% số dòng → nhắc TV3 (One-Hot có thể 
 def _merged_from(col: str) -> dict[str, str]:
     """Nhãn chuẩn → các cách viết gốc đã gộp vào (lấy thẳng từ luật trong code)."""
     sources: dict[str, dict[str, str]] = {
-        "manufacturer_clean": formatter.MANUFACTURER_ALIASES,
+        "manufacturer_clean": formatter.MANUFACTURER_ALIASES | missing_handler.MISSPELLED_BRANDS,
         "seller_type": {"owner": "private"},
     }
     merged: dict[str, list[str]] = {}
@@ -241,16 +243,25 @@ def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.D
          "Số giá trị khác nhau": int(clean[c].nunique())}
         for c, t in (dict(REQUIRED_CLEAN_SCHEMA) | selector.EXTRA_COLUMNS).items() if c in clean.columns
     ])
+    # Dùng chung bộ máy tương quan của TV2 (src.analysis.correlation_engine) để số trong
+    # Workbook trùng với báo cáo EDA: cùng cách bỏ NaN, cùng KTC Fisher, cùng gợi ý phương pháp.
     cols = NUMERIC_FEATURES + ["log_price"]
-    target_corr = []
-    for c in NUMERIC_FEATURES:
-        r, p_r = stats.pearsonr(clean[c], clean["log_price"])
-        rho, p_s = stats.spearmanr(clean[c], clean["log_price"])
-        target_corr.append({"Biến": c, "Pearson r": round(r, 4), "p (Pearson)": p_r,
-                            "Spearman ρ": round(rho, 4), "p (Spearman)": p_s, "n": len(clean)})
-    matrix = clean[cols].corr(method="pearson").round(3).reset_index().rename(columns={"index": "Biến"})
+    target = correlate_pairs(clean, [(c, "log_price") for c in NUMERIC_FEATURES])
+    target_corr = pd.DataFrame({
+        "Biến": target["x"], "Pearson r": target["pearson_r"].round(4), "p (Pearson)": target["pearson_p"],
+        "KTC 95% Pearson": [f"[{lo:.3f}; {hi:.3f}]" for lo, hi in
+                            zip(target["pearson_ci_low"], target["pearson_ci_high"])],
+        "Spearman ρ": target["spearman_rho"].round(4), "p (Spearman)": target["spearman_p"],
+        "Nên dùng (TV2)": target["recommended_method"], "n": target["n_samples"],
+    })
+    pairs = [(a, b) for i, a in enumerate(cols) for b in cols[i + 1:]]
+    long = correlate_pairs(clean, pairs)
+    matrix = pd.DataFrame(np.eye(len(cols)), index=cols, columns=cols)
+    for a, b, r in zip(long["x"], long["y"], long["pearson_r"]):
+        matrix.loc[a, b] = matrix.loc[b, a] = r
+    matrix = matrix.round(3).rename_axis("Biến").reset_index()
     vif = selector.vif_report(clean)
-    return dictionary, pd.DataFrame(target_corr), matrix, vif
+    return dictionary, target_corr, matrix, vif
 
 
 def build_sheet07(clean: pd.DataFrame, raw: pd.DataFrame | None, n: int = SAMPLE_SIZE) -> pd.DataFrame:

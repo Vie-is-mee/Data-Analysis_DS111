@@ -85,10 +85,10 @@ FEATURES: tuple[tuple[FormulaMetadata, callable], ...] = (
         FormulaMetadata(
             formula_id="car_age_squared", feature_name="car_age_squared", step_category=STEP,
             expression_plain="car_age_squared = car_age^2",
-            expression_latex=r"	ext{car\_age}^2",
+            expression_latex=r"\text{car\_age}^2",
             input_columns=["car_age"], output_series_key="car_age_squared",
-            theoretical_rationale=("Hồi quy đa thức bậc 2 (Bài 5): Sheet 06 cho Spearman(car_age) "
-                                   "-0,45 nhưng Pearson chỉ -0,19 → quan hệ cong (xe cổ lại đắt)"),
+            theoretical_rationale=("Hồi quy đa thức bậc 2 (Bài 5): Sheet 06 cho |Spearman(car_age)| "
+                                   "gần gấp đôi |Pearson| → quan hệ đơn điệu nhưng cong (xe cổ lại đắt)"),
             suitable_algorithms=LINEAR,
         ),
         # Cùng tên và công thức với ablation_runner của TV3 → không lệch giá trị.

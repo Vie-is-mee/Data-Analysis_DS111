@@ -361,3 +361,105 @@ từ chối manifest cũ.
   - **seller_type:** chỉ còn dealer và private (nhãn owner đã gộp vào private).
 - `state` (51 bang) không đưa vào bảng vì chỉ chuyển về chữ thường.
 - Kiểm tra: thêm test mỗi cột đủ nhãn và tổng số dòng đúng, mã condition tăng dần, `unknown` không có mã, chevy được gộp vào chevrolet. 71/71 test PASS. Đã xuất lại Workbook từ ABT v0.9.
+
+## 28/11 — Làm theo yêu cầu TV3 sau khi xem phần dư H02 (chuẩn bị ABT v1.0)
+**1. Lọc tin giá ảo, tin rác (tầng 1b, `formatter.filter_fake_listings`).** Bước này chạy TRƯỚC khi xuất VIN.
+
+| Luật | Số dòng bị loại (trước gộp VIN) |
+|---|---|
+| Giá giữ chỗ 123456 | 12 |
+| price == odometer (ví dụ 143.412) | 134 |
+| model là quảng cáo chung ('all makes and models', 'any make', 'all types', 'cars for sale', 'public auto auction') | 238 |
+
+- Tổng: 272.563 → 272.179 dòng (−384).
+- Đuôi giá ≥ 100k chỉ giảm 1.005 → 989. Phần lớn đuôi cao là giá đại lý thật (139.997, 134.997...). Vì vậy tỷ trọng MSE của đuôi có thể giảm ít, cần TV3 đo lại.
+- Tin model rác thực ra là tin **giá thấp** (trung vị 500–3.000), không nằm ở đuôi cao. Vẫn loại vì chúng không mô tả một chiếc xe cụ thể.
+- Chưa lọc giá 12345 (64 tin, 29 tin là cùng một chiếc SL600 đời 1995). Giá này hợp lý cho xe đó nên cần TV3 quyết thêm. Các giá lặp chữ số như 22222 hay 33333 cũng chưa lọc.
+- Hạn chế: vài tin price == odometer là số tròn (ví dụ 10.000/10.000) và có thể trùng thật. Ảnh hưởng chỉ 0,05% số dòng.
+
+**2. Cứu thêm hãng xe tải thương mại.**
+- Thêm freightliner (gồm frht), international (gồm intl, navistar), kenworth, peterbilt, hino, cùng mack, western star, sterling cho đủ nhóm.
+- Cứu thêm từ đầu cột model khi title không có năm, ví dụ '*kenworth* t680'. `manufacturer_source` có thêm giá trị 'model'.
+- Trên file gốc: số dòng còn thiếu hãng giảm 6.742 → 3.990 (−41%). Cứu từ title 5.597 dòng (trước là 4.050), cứu từ model 1.205 dòng.
+- Trong ABT trước gộp VIN: freightliner 536, international 676, hino 151, peterbilt 120, kenworth 100, sterling 30, mack 24, western star 9. Giá trung vị 25–49 nghìn USD, không nằm ở đuôi cao.
+
+**3. Ba lỗi nhỏ.**
+- `feature_engineer`: LaTeX của car_age² bị một ký tự TAB thay cho `\t`, do bản vá trước dùng chuỗi thường. Đã sửa và thêm test để không công thức nào chứa ký tự điều khiển.
+  - Lý do của car_age² bỏ số cứng −0,45/−0,19 vì đã cũ. Số mới trước gộp VIN: Spearman −0,55, Pearson −0,30; trên v0.9: −0,53 và −0,24.
+- Sheet 06 bỏ `.corr()` và scipy, chuyển sang dùng `correlate_pairs` của TV2.
+  - Số liệu khớp scipy đến 1e-12.
+  - Bảng có thêm KTC 95% của Pearson và phương pháp TV2 đề xuất.
+- Pipeline xuất thêm `vehicles_exp0_thin.csv`: 3 cột id/year/odometer nguyên văn, 295.451 dòng, id duy nhất, 6,9 MB.
+  - TV3 truyền file này vào `--raw-csv` để Exp0 chạy bằng dữ liệu gốc thật thay cho proxy.
+  - Đã thử `read_raw_exp0_features`: ghép đủ 272.179/272.179 id.
+
+**Kiểm tra.**
+- 73/73 test PASS. Test không chạm vào `data/processed` (kiểm bằng md5).
+- Validator 36/36 PASS trên ABT trước gộp VIN.
+- Danh sách VIN mới có 272.179 dòng (163.086 dòng có VIN); manifest thử ra 193.707 dòng.
+- Gửi TV3 `vin_candidates_local.parquet` và `vehicles_exp0_thin.csv` để khóa `split_manifest_v1.parquet`.
+
+## 28/11 (chiều) — Làm theo 6 mục TV3 chốt cho nhóm hãng 'unknown' (chuẩn bị ABT v1.0)
+Đầu vào: 2.722 dòng `unknown` trong ABT trước gộp VIN, chia 5 nhóm (xem mục 28/11 sáng). TV3 chốt cả 5 nhóm, và giá 12345 thì **giữ, không lọc**: giá này nằm sát trung vị thị trường, lọc cứng dễ xóa oan. Chỉ lọc các ca chắc chắn giả (123456, price == odometer, model rác).
+
+**Cách khớp vẫn giữ như cũ:** chỉ so ở **đầu** title (sau năm) hoặc **đầu** cột model. Khi phân tích, gần như toàn bộ từ khóa của các nhóm đều nằm ở hai vị trí này (ví dụ nhóm 1: 158/170 dòng, nhóm 2: 128/131 dòng). Khớp ở giữa chuỗi dễ nhầm, ví dụ 'holiday rambler' là RV chứ không phải hãng Rambler.
+
+**Nhóm 1 · Hãng xe tải/van/bus thương mại → hãng riêng (`OTHER_COMMERCIAL_BRANDS`).** 207 dòng, giá trung vị 26.883.
+- brightdrop, autocar, workhorse, blue bird/bluebird, am general, thomas built, ic bus, mci, ud trucks, grumman, vpg, e-one, seagrave, stewart-stevenson.
+- kw → kenworth (thêm vào bảng xe tải của buổi sáng).
+- Chữ 'military' không phải tên hãng nên giữ `unknown`. Riêng hmmwv/humvee suy ra am general (nhóm 4).
+
+**Nhóm 2 · Lỗi chính tả → hãng chuẩn (`MISSPELLED_BRANDS`).** Chỉ đưa vào các cách viết đếm thấy thật trong dữ liệu:
+- volkswagon/volkwagen/wolkswagen;
+- hyundia/hyndai/hyyundai/hyunday;
+- izuzu, cheverolet/chevorlet/cheverlot, nissian/nisson, mercedez/mercadez, infinti/infinite, porche, chrystler, cadilac, lincon/lincold, lexis, mazada/mazdo, suburu, studabaker, ponitac.
+- Thêm viết tắt mb/mbz → mercedes-benz, chev → chevrolet.
+- Cột model bỏ năm 2 hoặc 4 chữ số ở đầu ('86 chevorlet c10' → chevrolet).
+- Bảng nhãn chuẩn Sheet 05 tự ghi các cách viết đã gộp này.
+
+**Nhóm 3 · Hãng cổ hoặc đã ngừng → hãng riêng (`CLASSIC_BRANDS`).** 518 dòng, giá trung vị 11.450.
+- Lớn nhất: mg 135, triumph 92, studebaker 45, austin-healey 26, daihatsu 26, amc 22.
+- shelby 20 dòng, giá trung vị 69.500. Đúng điều TV3 lo: tách ra để `unknown` không lẫn xe cổ đắt tiền.
+- austin-healey tách riêng khỏi austin vì là hai thương hiệu khác nhau.
+- Thêm ineos (Grenadier, 9 dòng, trung vị 79.700). Đây là hãng mới, không có trong danh sách 42 hãng của Craigslist.
+- Hạn chế: Triumph cũng sản xuất xe máy, có 1 tin 'street triple' bị tính vào hãng triumph.
+
+**Nhóm 4 · Suy hãng từ tên dòng xe 1-1 (`MODEL_NAME_BRANDS`).** Nguồn ghi riêng là `manufacturer_source = 'model_name'`.
+- Chỉ đưa vào tên thuộc duy nhất một hãng: corvette/camaro/silverado → chevrolet; mustang/f150/super duty → ford; camry/tacoma → toyota; wrangler → jeep...
+- Giữ `unknown` cho tên dùng chung: sprinter (Mercedes/Dodge/Freightliner), 1500/2500/3500, e350 (Ford hay Mercedes), ranger (Ford/Polaris).
+- Cũng giữ `unknown` cho tên trùng RV: sierra, outback, forester.
+- Có test bảo đảm không tên nào thuộc 2 hãng.
+- Thứ tự cứu: tên hãng ở title → tên hãng ở model → tên dòng xe ở model → tên dòng xe ở title.
+- Kết quả: 509 dòng trong ABT (ford 200, chevrolet 147, toyota 37, jeep 27, mazda 26...).
+
+**Nhóm 5 · Loại xe không phải ô tô (`formatter.filter_non_car`).** Sheet 03 ghi dòng log "Loại ngoài phạm vi định giá ô tô".
+- Từ khóa gồm:
+  - hãng RV (keystone, winnebago, jayco, forest river, thor, fleetwood...) và chữ rv/camper/motorhome;
+  - rơ-moóc, kể cả rơ-moóc sơ-mi (wabash, great dane, dry van);
+  - xe máy/ATV (yamaha, polaris, kawasaki, can am, ducati, ktm);
+  - xe golf (golf cart, club car, ezgo, cushman), food truck, thuyền, máy công trình/nông nghiệp (kubota, forklift, kalmar).
+- **Chỉ xét dòng chưa rõ hãng (`none`) hoặc hãng chỉ suy từ tên model (`model_name`).** Ô tô có hãng rõ mà ghi 'with camper shell' thì không bị loại. Lý do xét cả `model_name`: 'charger bass boat' (thuyền), 'cherokee by forest river' (RV) và 'avenger primtime trailer' (rơ-moóc) bị nhóm 4 suy nhầm thành dodge/jeep, nhưng vẫn bị loại đúng.
+- Bỏ cụm 'trade for …' và 'with/and trailer' trước khi so khớp. Có 6 tin được giữ đúng nhờ vậy, ví dụ 'f150 … trade for motorhome', 'f650 … with available trailers'.
+- Bị loại 367 dòng (356 `none` + 11 `model_name`), giá trung vị 12.900. Đã đọc toàn bộ danh sách, không thấy ô tô bị loại nhầm.
+- Bước này chạy TRƯỚC khi xuất VIN.
+
+**Kết quả lượt 1 (trước gộp VIN).**
+- Số dòng: 272.179 → 271.812 dòng (−367).
+- `unknown`: 2.722 → **901 dòng (−67%)**, còn 0,33% số dòng, giá trung vị 8.500.
+- Số hãng: 111.
+- Nguồn hãng: original 263.550 · title 5.596 · model 1.256 · model_name 509 · none 901.
+- Trên file gốc: cứu từ title 6.428 dòng (sáng nay 5.597), từ model 1.578 (sáng nay 1.205), suy từ tên dòng xe 612.
+- Phần `unknown` còn lại chủ yếu là:
+  - tin không ghi hãng ('wheelchair handicap van', 'cargo van');
+  - tin rao mua xe;
+  - xe quân sự;
+  - tin có title mở đầu bằng tên hãng nhưng không có năm (151 dòng, ví dụ 'mercedes benz sprinter 2004'). Luật 24/11 chỉ tin title có năm ở đầu nên chưa cứu nhóm này. Nếu TV3 muốn cứu, việc này không làm đổi tập dòng, nên không cần khóa lại manifest.
+
+**Kiểm tra.**
+- 75/75 test PASS. Test mới: `test_brand_groups_model_name_and_non_car_filter` (12 ca của 5 nhóm) và `test_model_name_table_is_one_to_one`. md5 cho thấy test không ghi vào `data/processed`.
+- Sửa `test_m1_new_cleaning_rules`: dòng 'Smart key remote' vốn có model ngẫu nhiên 'camry' nên nay suy ra toyota. Đặt model rỗng để test vẫn kiểm đúng điều cần kiểm.
+- Validator 36/36 PASS, READY FOR HOT-SWAP.
+- File gửi TV3, đều không rỗng:
+  - `vin_candidates_local.parquet`: 5,3 MB, 271.812 dòng, 162.924 dòng có VIN, khớp đủ listing_id của ABT.
+  - `vehicles_exp0_thin.csv`: 6,9 MB, 295.451 dòng, id duy nhất. `read_raw_exp0_features` ghép đủ 271.812/271.812 id.
+- Workbook xuất lại: Sheet 03 có dòng loại ngoài phạm vi, Sheet 05 có 182 dòng.

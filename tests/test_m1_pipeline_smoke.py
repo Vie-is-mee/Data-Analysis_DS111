@@ -6,6 +6,8 @@ import pytest
 
 from src.core.bootstrap_and_validate import validate_handoff_dataset
 from src.core.vin_reposts import resolve_vin_reposts
+from src.data.feature_engineer import FEATURES
+from src.models.ablation_runner import read_raw_exp0_features
 from src.data.pipeline_m1 import build_clean_dataset, main
 from src.models.split_manifest import make_split_manifest
 from src.data.raw_profile import PIPELINE_COLUMNS, load_raw, profile_raw
@@ -56,9 +58,18 @@ def test_m1_pipeline_passes_handoff_validation(tmp_path):
     assert main(["--raw", str(raw_csv), "--out", str(out), "--store", str(store),
                  "--log", str(tmp_path / "log.csv"),
                  "--vin-out", str(tmp_path / "vin.parquet"),
-                 "--vin-report", str(tmp_path / "vin_report.csv")]) == 0
+                 "--vin-report", str(tmp_path / "vin_report.csv"),
+                 "--exp0-raw-out", str(tmp_path / "exp0.csv")]) == 0
     # Không được ghi đè file thật trong data/processed (lỗi 26/11).
     assert (tmp_path / "vin.parquet").is_file()
+
+    # CSV mỏng cho Exp0: đúng 3 cột, đủ mọi dòng gốc, TV3 ghép được theo listing_id.
+    thin = pd.read_csv(tmp_path / "exp0.csv")
+    assert list(thin.columns) == ["id", "year", "odometer"] and thin["id"].is_unique
+    assert len(thin) == _fake_raw()["id"].nunique()
+    ids = pd.read_parquet(out)["listing_id"]
+    exp0 = read_raw_exp0_features(tmp_path / "exp0.csv", ids)
+    assert exp0 is not None and set(exp0.index) == set(ids)
 
     report = validate_handoff_dataset(out, store)
     failed = [f"{c.name}: {c.detail}" for c in report.checks if not c.passed]
@@ -98,7 +109,8 @@ def test_m1_new_cleaning_rules(tmp_path):
     # Hãng thiếu → cứu từ title, kể cả hãng ngoài 42 hãng và hãng 2 từ.
     raw.loc[100, ["manufacturer", "title"]] = [pd.NA, "2019 Maserati Ghibli S"]
     raw.loc[101, ["manufacturer", "title"]] = [pd.NA, "2016 Land Rover Range Rover"]
-    raw.loc[102, ["manufacturer", "title"]] = [pd.NA, "Smart key remote for sale"]
+    # model rỗng: model ngẫu nhiên kiểu 'camry' sẽ suy ra toyota (nhóm 4), không phải điều cần thử.
+    raw.loc[102, ["manufacturer", "title", "model"]] = [pd.NA, "Smart key remote for sale", pd.NA]
     # Đồng hồ hỏng, tin Canada.
     raw.loc[110, "odometer_broken"] = 1
     raw.loc[111, "odometer_rolled_over"] = 1
@@ -213,9 +225,13 @@ def test_condition_missing_and_manufacturer_source(tmp_path):
     raw.loc[202, ["manufacturer", "title"]] = [pd.NA, "2019 Maserati Ghibli S"]
     raw.loc[203, ["manufacturer", "title"]] = ["ford", "2015 Toyota Camry"]     # mâu thuẫn
     raw.loc[204, ["manufacturer", "title"]] = ["rover", "2016 Land Rover LR4"]  # alias, không mâu thuẫn
-    raw.loc[205, ["manufacturer", "title"]] = [pd.NA, "Smart key remote"]
+    raw.loc[205, ["manufacturer", "title", "model"]] = [pd.NA, "Smart key remote", pd.NA]
     raw.loc[206, ["manufacturer", "title"]] = ["ram", "2008 Dodge Ram 1500"]  # cùng gia đình hãng
-    for r in range(200, 207):
+    # Hãng xe tải thương mại: từ title có năm, hoặc từ đầu cột model khi title không có năm.
+    raw.loc[207, ["manufacturer", "title"]] = [pd.NA, "2018 Peterbilt 579 sleeper"]
+    raw.loc[208, ["manufacturer", "title", "model"]] = [pd.NA, "Clean daycab, call now",
+                                                         "*freightliner* cascadia"]
+    for r in range(200, 209):
         raw.loc[r, ["price", "year", "odometer"]] = [15_000, 2015, 50_000]
     raw_csv = tmp_path / "vehicles.csv"
     raw.to_csv(raw_csv, index=False)
@@ -228,7 +244,86 @@ def test_condition_missing_and_manufacturer_source(tmp_path):
     assert not data.loc[ids[204], "manufacturer_title_conflict"]
     assert not data.loc[ids[206], "manufacturer_title_conflict"]
     assert data.loc[ids[205], "manufacturer_source"] == "none"
-    assert set(data["manufacturer_source"]) <= {"original", "title", "none"}
+    assert data.loc[ids[207], ["manufacturer_clean", "manufacturer_source"]].tolist() == ["peterbilt", "title"]
+    assert data.loc[ids[208], ["manufacturer_clean", "manufacturer_source"]].tolist() == ["freightliner", "model"]
+    assert set(data["manufacturer_source"]) <= {"original", "title", "model", "model_name", "none"}
+
+
+def test_fake_listings_are_dropped_before_vin_export(tmp_path):
+    raw = _fake_raw()
+    ids = raw["id"]
+    for r in range(300, 305):
+        raw.loc[r, ["price", "year", "odometer", "model"]] = [15_000, 2015, 50_000, "camry"]
+    raw.loc[300, "price"] = 123_456                      # giá giữ chỗ
+    raw.loc[301, ["price", "odometer"]] = [48_900, 48_900]  # price == odometer
+    raw.loc[302, "model"] = "All Makes and Models"        # quảng cáo chung
+    raw.loc[303, "model"] = "cars for sale"
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    result = build_clean_dataset(load_raw(raw_csv))
+
+    kept = set(result.data["listing_id"])
+    assert not kept & set(ids[300:304]) and ids[304] in kept
+    # Lọc trước bước VIN → tin rác không vào danh sách gửi TV3.
+    assert not set(result.vin_candidates["listing_id"]) & set(ids[300:304])
+    steps = set(result.log.to_dataframe()["action"])
+    assert {"Lọc giá giữ chỗ 123456", "Lọc price == odometer", "Lọc tin quảng cáo chung (model rác)"} <= steps
+
+
+# (manufacturer, title, model) cho các ca TV3 chốt 28/11.
+BRAND_CASES: dict[int, tuple[object, str, object]] = {
+    400: (pd.NA, "2019 BrightDrop Zevo 600", pd.NA),              # nhóm 1: hãng thương mại
+    401: (pd.NA, "1974 Triumph TR6", pd.NA),                      # nhóm 3: hãng cổ
+    402: (pd.NA, "2012 Volkswagon Jetta", pd.NA),                 # nhóm 2: lỗi chính tả
+    403: (pd.NA, "Clean truck for sale", "86 chevorlet c10"),     # lỗi chính tả ở model có năm
+    404: (pd.NA, "2006 Corvette Z06", pd.NA),                     # nhóm 4: tên model ở title
+    405: (pd.NA, "Great truck", "f-150 xlt"),                     # nhóm 4: tên model ở model
+    406: (pd.NA, "2016 Sprinter 2500", "sprinter 2500"),          # tên dùng chung → unknown
+    407: (pd.NA, "2019 Keystone Springdale RV", "keystone springdale"),        # nhóm 5: RV
+    408: (pd.NA, "2011 F150 4x4 trade for motorhome", "f150"),    # 'trade for' không tính
+    409: (pd.NA, "1987 Charger bass boat", "charger bass boat"),  # hãng chỉ suy từ model → vẫn xét
+    410: ("ford", "2015 Ford F-250 with camper shell", "f-250"),  # hãng rõ → không đụng tới
+    411: (pd.NA, "Yamaha golf cart", "yamaha drive2"),            # nhóm 5: xe golf
+}
+
+
+def test_brand_groups_model_name_and_non_car_filter(tmp_path):
+    raw = _fake_raw()
+    ids = raw["id"]
+    for r, values in BRAND_CASES.items():
+        raw.loc[r, ["manufacturer", "title", "model"]] = list(values)
+        raw.loc[r, ["price", "year", "odometer"]] = [15_000, 2015, 50_000]
+    raw_csv = tmp_path / "vehicles.csv"
+    raw.to_csv(raw_csv, index=False)
+    result = build_clean_dataset(load_raw(raw_csv))
+    data = result.data.set_index("listing_id")
+    got = lambda r: data.loc[ids[r], ["manufacturer_clean", "manufacturer_source"]].tolist()
+
+    assert got(400) == ["brightdrop", "title"]
+    assert got(401) == ["triumph", "title"]
+    assert got(402) == ["volkswagen", "title"]
+    assert got(403) == ["chevrolet", "model"]
+    assert got(404) == ["chevrolet", "model_name"]
+    assert got(405) == ["ford", "model_name"]
+    assert got(406) == ["unknown", "none"]
+    assert got(408) == ["ford", "model_name"]
+    assert got(410) == ["ford", "original"]
+    dropped = {ids[r] for r in (407, 409, 411)}
+    assert not dropped & set(data.index)
+    # Lọc trước bước VIN → xe không phải ô tô không vào danh sách gửi TV3.
+    assert not dropped & set(result.vin_candidates["listing_id"])
+    assert "Loại ngoài phạm vi định giá ô tô" in set(result.log.to_dataframe()["action"])
+
+
+def test_model_name_table_is_one_to_one():
+    from src.data.missing_handler import _MODEL_NAMES, MODEL_NAME_BRANDS
+    assert sum(map(len, _MODEL_NAMES.values())) == len(MODEL_NAME_BRANDS)  # không tên nào thuộc 2 hãng
+    assert not {"sprinter", "1500", "2500", "e350", "e 350", "ranger", "sierra"} & set(MODEL_NAME_BRANDS)
+
+
+def test_formula_latex_has_no_control_characters():
+    for meta, _ in FEATURES:
+        assert meta.expression_latex.isprintable(), meta.formula_id
 
 
 def test_contract_11_extra_columns(tmp_path):

@@ -21,7 +21,7 @@ EXTRA_COLUMNS: dict[str, str] = {
     "seller_type": "string",                # private / dealer / unknown
     "car_age_squared": "float64",           # M1-07: tuổi xe bậc 2 (đã lưu FormulaStore)
     # Cột truy vết/kiểm tra do TV1 thêm (TV3 đồng ý 24/11):
-    "manufacturer_source": "string",        # original / title / none
+    "manufacturer_source": "string",        # original / title / model / model_name / none
     "manufacturer_title_conflict": "bool",  # hãng gốc khác hãng trong title
     "price_outlier_iqr": "bool",            # ngoài 1,5·IQR log(price) của hãng (ngưỡng từ train)
 }
