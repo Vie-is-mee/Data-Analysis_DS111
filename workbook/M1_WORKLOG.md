@@ -463,3 +463,43 @@ từ chối manifest cũ.
   - `vin_candidates_local.parquet`: 5,3 MB, 271.812 dòng, 162.924 dòng có VIN, khớp đủ listing_id của ABT.
   - `vehicles_exp0_thin.csv`: 6,9 MB, 295.451 dòng, id duy nhất. `read_raw_exp0_features` ghép đủ 271.812/271.812 id.
 - Workbook xuất lại: Sheet 03 có dòng loại ngoài phạm vi, Sheet 05 có 182 dòng.
+
+## 28/11 (tối) — M1-10 · Chọn biến: diễn giải Sheet 06, VIF, lý do định lượng
+Yêu cầu (bảng theo dõi): "Loại cột không có ý nghĩa, phân tích VIF và biến cộng tuyến". Tiêu chí đạt: có lý do định lượng, VIF được báo cáo và giải thích.
+
+**Cách làm (`selector.selection_evidence`, Sheet 06).**
+- Mỗi cột của ABT (29 cột) có đúng một dòng gồm: thước đo, số liệu, bằng chứng, và đề xuất riêng cho OLS/Ridge và cho cây (Giữ / Bỏ / Thử / Mục tiêu). "Thử" nghĩa là TV3 quyết bằng CV.
+- Mọi số tính trên **tập train** (190.268 dòng), vì chọn biến cho mô hình không được dùng thông tin val/test (cùng quy ước với TV2). Có test chứng minh: xáo giá ở val/test thì bảng không đổi.
+- Thước đo đặt trên cùng thang "tỷ lệ phương sai log_price giải thích được":
+  - biến số: r²;
+  - biến phân loại: ω² (η² hiệu chỉnh theo số nhãn), lấy từ bộ máy `association` của TV2;
+  - đóng góp của một biến: R² OLS tăng thêm khi thêm biến đó (Bài 5).
+- Câu diễn giải sinh từ số liệu, không ghi cứng, nên khi xuất lại trên ABT V1.0 chữ vẫn khớp số.
+- Dùng lại hàm của nhóm: `correlate_pairs` (TV2), `categorical_association_table`/`eta_squared` (TV2), `compute_vif_table` (TV3), `vn_number` (TV2).
+- Sheet 06 xếp lại theo thứ tự: từ điển cột → **quyết định chọn biến** → VIF theo bộ biến kèm diễn giải → tương quan với log_price kèm ghi chú p-value → ma trận.
+
+**Phát hiện chính (ABT trước gộp VIN, tập train). Nên đưa vào báo cáo/slide.**
+
+| Phát hiện | Số liệu | Đề xuất |
+|---|---|---|
+| year trùng car_age | r = −1,000; VIF ≈ 86.000, vì mọi tin đăng năm 2026 nên car_age = 2026 − year | Bỏ year và posting_year (posting_year chỉ có 1 giá trị) |
+| Tuổi xe tác động theo đường cong | Spearman −0,55 so với Pearson −0,30. R² chỉ car_age = 9,2% → thêm car_age² = **29,8%** | Giữ car_age² cho OLS/Ridge (Bài 5 · đa thức). Cây không cần |
+| car_age và car_age² cộng tuyến | VIF 16,2 / 12,0; trừ trung bình car_age trước khi bình phương thì còn 6,5 / 4,4 | Đây là cộng tuyến cấu trúc của đa thức, không phải trùng thông tin → vẫn giữ |
+| **odometer mạnh hơn log_odometer** | r² 28,6% so với 13,2%; thêm log vào bộ đã có odometer chỉ tăng R² 0,02 điểm | Nhánh tuyến tính dùng odometer; log_odometer để "Thử". TV3 đang dùng log_odometer trong `LINEARIZED_NUMERIC` → báo TV3 |
+| Vì sao log_odometer yếu | 1,5% dòng có odometer < 1.000 (giá trung vị 29.600 USD, phần lớn là xe mới) là điểm đòn bẩy của log; bỏ các dòng này thì r = −0,52 | Khớp với nhận xét độ nhạy của TV2 |
+| miles_per_year đóng góp nhỏ | r² riêng 1,0%; thêm vào bộ số chỉ tăng R² 48,07% → 48,22% | Thử, ưu tiên thấp |
+| model_clean quá nhiều nhãn | ω² 46,4% nhưng 20.496 nhãn, trong đó 18.052 nhãn có < 10 dòng train | Bỏ ở nhánh chính. Mã hóa theo mục tiêu là phần mở rộng |
+| region lồng trong state | 387/398 vùng nằm gọn trong 1 bang; ω² 8,1% so với state 5,4% | Thử thay state, không dùng cả hai |
+| year_era trùng một phần tuổi xe | Thêm vào car_age + car_age²: R² 29,8% → 32,6% | Thử cho OLS/Ridge. Cây thì thừa |
+| transmission yếu | ω² 0,2% (91,6% xe số tự động) | Thử |
+| seller_type có tín hiệu | ω² 9,2%, TV3 chưa thử | Thử |
+| price_outlier_iqr là rò rỉ | η² 6,5% vì cờ tính từ price | Bỏ, chỉ dùng để thử lọc train |
+| split_set không phụ thuộc giá | η² = 0,0002% | Kiểm tra chéo: chia tập không rò rỉ |
+
+**Kiểm tra.**
+- 76/76 test PASS. Test mới `test_selection_table_covers_every_column_with_train_only_evidence` kiểm 3 điều: phủ đủ 29 cột, quyết định thuộc miền cố định, và chỉ dùng train. md5 cho thấy test không ghi vào `data/processed`.
+- Workbook xuất lại từ ABT trước gộp VIN: Sheet 06 có 115 dòng, cột bằng chứng được bật xuống dòng.
+- Khi có ABT V1.0 (sau manifest) chỉ cần xuất lại, số và câu diễn giải tự cập nhật.
+- Hạn chế:
+  - R² ở đây là R² OLS **trên train**, chưa phải CV, nên chỉ là căn cứ ban đầu. Kết luận cuối cùng là thí nghiệm của TV3 (Exp 1–4).
+  - Ngưỡng 0,99 / 1% / 0,5 điểm / 1.000 nhãn là ngưỡng kinh nghiệm và được ghi ngay dưới bảng.

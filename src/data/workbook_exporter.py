@@ -36,6 +36,7 @@ from configs.project_config import (
     TITLE_STATUS_ORDINAL_EXPERIMENTAL,
 )
 from src.analysis.correlation_engine import correlate_pairs
+from src.analysis.eda_summary import vn_number
 from src.core.formula_store import FormulaStore
 from src.data import formatter, missing_handler, selector
 from src.data.pipeline_m1 import DEFAULT_LOG, DEFAULT_STORE, DEFAULT_VIN_REPORT
@@ -237,7 +238,7 @@ def build_label_table(clean: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_sheet06(clean: pd.DataFrame) -> dict[str, object]:
     dictionary = pd.DataFrame([
         {"Cột": c, "Kiểu": t, "Vai trò": COLUMN_ROLES.get(c, "Đặc trưng"),
          "Số giá trị khác nhau": int(clean[c].nunique())}
@@ -260,8 +261,16 @@ def build_sheet06(clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.D
     for a, b, r in zip(long["x"], long["y"], long["pearson_r"]):
         matrix.loc[a, b] = matrix.loc[b, a] = r
     matrix = matrix.round(3).rename_axis("Biến").reset_index()
-    vif = selector.vif_report(clean)
-    return dictionary, target_corr, matrix, vif
+    decisions, vif, vif_notes = selector.selection_evidence(clean)
+    return {"dictionary": dictionary, "target_corr": target_corr, "matrix": matrix,
+            "decisions": decisions, "vif": vif, "vif_notes": vif_notes}
+
+
+def _write_notes(ws, row: int, notes: list[str]) -> int:
+    """Ghi từng câu diễn giải một dòng ở cột A; trả về dòng trống kế tiếp."""
+    for i, text in enumerate(notes):
+        ws.cell(row + i, 1, f"• {text}")
+    return row + len(notes) + 1
 
 
 def build_sheet07(clean: pd.DataFrame, raw: pd.DataFrame | None, n: int = SAMPLE_SIZE) -> pd.DataFrame:
@@ -358,15 +367,44 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
                   "Mã title_status chỉ là thứ tự thực nghiệm (đối chứng One-Hot ở Exp 3). "
                   "state (51 mã bang) giữ nguyên mã viết thường nên không liệt kê.")
 
-    dictionary, target_corr, matrix, vif = build_sheet06(clean)
+    s06 = build_sheet06(clean)
     ws = book["06_Selection"]
     r = _write_title(ws, 1, "Từ điển cột bàn giao (22 cột hợp đồng + cột cờ bổ sung)")
-    r = _write_table(ws, dictionary, r)
-    r = _write_title(ws, r, "Tương quan với log_price (Bài 4: Pearson/Spearman kèm p-value)")
+    r = _write_table(ws, s06["dictionary"], r)
+    r = _write_title(ws, r, "Quyết định chọn biến (M1-10) — đề xuất của TV1, tính trên tập train")
+    decisions, d_start = s06["decisions"], r
+    r = _write_table(ws, decisions, r, max_width=90)
+    evidence_col = decisions.columns.get_loc("Bằng chứng định lượng") + 1
+    for (cell,) in ws.iter_rows(min_row=d_start + 1, max_row=d_start + len(decisions),
+                                min_col=evidence_col, max_col=evidence_col):
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    r = _write_notes(ws, r - 1, [
+        "Giữ = đưa vào mô hình; Bỏ = không đưa vào (có lý do định lượng); Thử = TV3 quyết bằng CV; "
+        "Mục tiêu = biến cần dự báo.",
+        "Thước đo: r² = Pearson r bình phương (biến số); ω² = η² hiệu chỉnh theo số nhãn (biến phân loại, "
+        "bộ máy TV2); R² tăng thêm = R² OLS khi thêm biến trừ R² khi chưa thêm (Bài 5).",
+        f"Ngưỡng kinh nghiệm: |r| ≥ {vn_number(selector.DUPLICATE_R, 2)} → trùng thông tin; "
+        f"< {vn_number(selector.MIN_SHARE * 100)}% phương sai → yếu; R² tăng < "
+        f"{vn_number(selector.MIN_GAIN * 100, 1)} điểm % → đóng góp nhỏ; "
+        f"> {vn_number(selector.MAX_ONEHOT_LEVELS)} nhãn → không One-Hot.",
+    ])
+    r = _write_title(ws, r, "VIF theo từng bộ biến — phần mở rộng ngoài slide (> 5 cảnh báo, > 10 nghiêm trọng)")
+    r = _write_table(ws, s06["vif"], r)
+    r = _write_notes(ws, r - 1, s06["vif_notes"])
+    target_corr = s06["target_corr"]
+    r = _write_title(ws, r, "Tương quan với log_price (Bài 4: Pearson/Spearman kèm p-value) — toàn ABT")
     r = _write_table(ws, target_corr, r)
+    n = int(target_corr["n"].max()) if len(target_corr) else 0
+    r = _write_notes(ws, r - 1, [
+        f"p ≈ 0 ở hầu hết các biến vì n = {vn_number(n)} dòng: mẫu lớn thì r nhỏ vẫn có ý nghĩa thống kê, "
+        "nên đọc độ lớn r/ρ và KTC 95% chứ không chỉ p (Bài 4).",
+        "Cột 'Nên dùng (TV2)': Spearman khi |ρ| − |r| > 0,10 hoặc |skew| > 1, ngược lại Pearson. "
+        "car_age² có Spearman trùng car_age vì car_age ≥ 0 nên bình phương giữ nguyên thứ hạng.",
+    ])
+    matrix = s06["matrix"]
     r = _write_title(ws, r, "Ma trận tương quan Pearson (tô màu như heatmap)")
     m_start = r
-    r = _write_table(ws, matrix, r)
+    _write_table(ws, matrix, r)
     first, last = get_column_letter(2), get_column_letter(matrix.shape[1])
     ws.conditional_formatting.add(
         f"{first}{m_start + 1}:{last}{m_start + len(matrix)}",
@@ -374,8 +412,6 @@ def export_workbook(clean: pd.DataFrame, log: pd.DataFrame, store: FormulaStore,
                        mid_type="num", mid_value=0, mid_color="FFFFFF",
                        end_type="num", end_value=1, end_color="F8696B"),
     )
-    r = _write_title(ws, r, "VIF — phần mở rộng ngoài slide (> 5 cảnh báo, > 10 nghiêm trọng)")
-    _write_table(ws, vif, r)
 
     ws = book["07_Sample_Comparison"]
     r = _write_title(ws, 1, f"Đối chiếu {SAMPLE_SIZE} listing_id cố định (seed {CONFIG.random_state}) trước/sau làm sạch")

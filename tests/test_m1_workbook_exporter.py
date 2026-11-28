@@ -77,3 +77,36 @@ def test_label_table_covers_every_label_with_ordinal_codes(tmp_path):
     sheet = load_workbook(out)["05_Encoding"]
     texts = [c.value for row in sheet.iter_rows() for c in row if isinstance(c.value, str)]
     assert any(t.startswith("Bảng nhãn chuẩn") for t in texts)
+
+
+def test_selection_table_covers_every_column_with_train_only_evidence(tmp_path):
+    from src.data.selector import DROP, KEEP, LINEAR, TARGET, TREE, TRY, selection_evidence
+
+    out = tmp_path / "Project_Workbook.xlsx"
+    data = _export(tmp_path, out).data
+    table, vif, notes = selection_evidence(data)
+
+    # Mỗi cột ABT có đúng một dòng quyết định, mỗi quyết định thuộc miền cố định.
+    assert sorted(table["Cột"]) == sorted(data.columns)
+    assert set(table[LINEAR]) | set(table[TREE]) <= {KEEP, DROP, TRY, TARGET}
+    assert table["Bằng chứng định lượng"].str.len().gt(0).all()
+    pick = table.set_index("Cột")
+    assert pick.loc["year", LINEAR] == DROP            # posting_year hằng → year trùng car_age
+    assert pick.loc["posting_year", LINEAR] == DROP
+    assert pick.loc["price_outlier_iqr", LINEAR] == DROP  # tính từ price → rò rỉ
+    assert pick.loc["car_age", LINEAR] == KEEP
+    assert pick.loc["car_age_squared", TREE] == DROP   # biến đổi đơn điệu: thừa với cây
+    assert set(vif["Bộ biến"].str[:2]) == {"1.", "2.", "3."} and len(notes) >= 3
+
+    # Căn cứ chọn biến chỉ dùng train: đổi giá val/test không làm đổi số liệu (trừ split_set, đo toàn ABT).
+    noisy = data.copy()
+    other = noisy["split_set"].ne("train")
+    noisy.loc[other, "log_price"] = noisy.loc[other, "log_price"].sample(frac=1, random_state=1).to_numpy()
+    again, _, _ = selection_evidence(noisy)
+    keep_rows = table["Cột"].ne("split_set")
+    assert again.loc[keep_rows, "Giá trị"].equals(table.loc[keep_rows, "Giá trị"])
+
+    sheet = load_workbook(out)["06_Selection"]
+    texts = [c.value for row in sheet.iter_rows() for c in row if isinstance(c.value, str)]
+    assert any(t.startswith("Quyết định chọn biến") for t in texts)
+    assert any(t.startswith("• Bộ 2: car_age và car_age²") for t in texts)
