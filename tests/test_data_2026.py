@@ -65,6 +65,27 @@ def test_split_manifest_rejects_overlap_and_missing_keys(synthetic):
         validate_split_manifest(broken, synthetic["listing_id"])
 
 
+def test_split_manifest_preserves_locked_base_splits(synthetic):
+    frame = synthetic[["listing_id"]].assign(
+        vehicle_group_id=[f"g:{i // 2}" for i in range(len(synthetic))]
+    )
+    base = make_split_manifest(frame)
+    # Loại bớt 15 dòng và thêm 1 ID thay thế trong cùng nhóm đã tồn tại.
+    trimmed = frame.iloc[15:].copy()
+    existing_group = base.loc[base["split_set"].eq("test"), GROUP_COLUMN].iloc[0]
+    replacement = pd.DataFrame(
+        [{"listing_id": int(frame["listing_id"].max()) + 100, GROUP_COLUMN: existing_group}]
+    )
+    v1_input = pd.concat([trimmed, replacement], ignore_index=True)
+    v1 = make_split_manifest(v1_input, base_manifest=base)
+    validate_split_manifest(v1, v1_input["listing_id"])
+    merged = v1.merge(base[["listing_id", "split_set"]], on="listing_id", suffixes=("_v1", "_v0"))
+    # Không một dòng nào được phép nhảy tập giữa v0 và v1.
+    assert (merged["split_set_v1"] == merged["split_set_v0"]).all()
+    # Dòng thay thế cùng vehicle_group_id phải kế thừa đúng tập test của nhóm đó.
+    assert v1.loc[v1["listing_id"].eq(replacement.loc[0, "listing_id"]), "split_set"].item() == "test"
+
+
 def test_cylinder_mode_learns_only_observed_train():
     cols = [
         "manufacturer_clean",
